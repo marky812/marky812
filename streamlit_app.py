@@ -1,371 +1,271 @@
-"""
-Streamlit Google Sheets Health Calendar
---------------------------------------
-A one-file Streamlit app for tracking calories and exercise over the next 30 days
-with Google Sheets as the backend.
-
-Deploy notes:
-1. Create a Google Cloud service account and enable the Google Sheets API.
-2. Create or choose a Google Sheet.
-3. Share the Google Sheet with the service account email as Editor.
-4. In Streamlit Cloud, add secrets in this shape:
-
-[gcp_service_account]
-type = "service_account"
-project_id = "..."
-private_key_id = "..."
-private_key = "-----BEGIN PRIVATE KEY-----\n...\n-----END PRIVATE KEY-----\n"
-client_email = "your-service-account@your-project.iam.gserviceaccount.com"
-client_id = "..."
-auth_uri = "https://accounts.google.com/o/oauth2/auth"
-token_uri = "https://oauth2.googleapis.com/token"
-auth_provider_x509_cert_url = "https://www.googleapis.com/oauth2/v1/certs"
-client_x509_cert_url = "..."
-universe_domain = "googleapis.com"
-
-[google_sheet]
-spreadsheet_id = "YOUR_SPREADSHEET_ID"
-worksheet_name = "health_log"
-
-5. requirements.txt should include:
-streamlit
-gspread
-google-auth
-pandas
-"""
-
-from __future__ import annotations
-
+import json
 from datetime import date, datetime, timedelta
-from typing import Any
 
+import gspread
 import pandas as pd
 import streamlit as st
+from google.oauth2.service_account import Credentials
 
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-except ImportError:
-    st.error(
-        "Missing dependencies. Add `gspread`, `google-auth`, and `pandas` to requirements.txt."
-    )
-    st.stop()
+st.set_page_config(page_title="30-Day Calories + Exercise Tracker", page_icon="🔥", layout="wide")
+st.title("🔥 30-Day Calories + Exercise Tracker")
+st.caption("Tracks calories and exercise using Google Sheets as the backend.")
 
-
-# -----------------------------
-# App configuration
-# -----------------------------
-st.set_page_config(
-    page_title="30-Day Health Calendar",
-    page_icon="📅",
-    layout="wide",
-)
-
-SCOPES = [
-    "https://www.googleapis.com/auth/spreadsheets",
-]
-
-REQUIRED_HEADERS = [
-    "date",
-    "calories",
-    "exercise",
-    "notes",
-    "updated_at",
-]
+SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+DEFAULT_SPREADSHEET_NAME = "Streamlit Calories Tracker"
+DEFAULT_WORKSHEET_NAME = "daily_log"
+HEADERS = ["date", "calories", "exercise", "exercise_minutes", "notes", "updated_at"]
 
 
-# -----------------------------
-# Google Sheets helpers
-# -----------------------------
 @st.cache_resource(show_spinner=False)
-def get_worksheet() -> Any:
-    """Connect to Google Sheets and return the configured worksheet.
-
-    The sheet itself must already exist and be shared with the service account.
-    This app will create the worksheet/tab if it does not exist.
-    """
-    if "gcp_service_account" not in st.secrets:
-        st.error("Missing `[gcp_service_account]` in Streamlit secrets.")
+def get_gspread_client():
+    if "gcp_service_account_json" not in st.secrets:
+        st.error(
+            "Missing `gcp_service_account_json` in Streamlit Secrets.\n\n"
+            "Go to Streamlit Cloud → App → Settings → Secrets and paste your full JSON like this:\n\n"
+            "gcp_service_account_json = '''\n{ your entire Google service account JSON here }\n'''"
+        )
         st.stop()
 
-    if "google_sheet" not in st.secrets or "spreadsheet_id" not in st.secrets["google_sheet"]:
-        st.error("Missing `[google_sheet] spreadsheet_id` in Streamlit secrets.")
+    try:
+        service_account_info = json.loads(st.secrets["gcp_service_account_json"])
+    except Exception as e:
+        st.error("Could not parse `gcp_service_account_json`. Make sure it is valid JSON inside triple quotes.")
+        st.exception(e)
         st.stop()
 
-    creds = Credentials.from_service_account_info(
-        dict(st.secrets["gcp_service_account"]),
-        scopes=SCOPES,
-    )
-    client = gspread.authorize(creds)
+    creds = Credentials.from_service_account_info(service_account_info, scopes=SCOPES)
+    return gspread.authorize(creds)
 
-    spreadsheet_id = st.secrets["google_sheet"]["spreadsheet_id"]
-    worksheet_name = st.secrets["google_sheet"].get("worksheet_name", "health_log")
 
-    spreadsheet = client.open_by_key(spreadsheet_id)
+@st.cache_resource(show_spinner=False)
+def get_or_create_worksheet():
+    gc = get_gspread_client()
+    spreadsheet_name = st.secrets.get("spreadsheet_name", DEFAULT_SPREADSHEET_NAME)
+    worksheet_name = st.secrets.get("worksheet_name", DEFAULT_WORKSHEET_NAME)
+
+    try:
+        spreadsheet = gc.open(spreadsheet_name)
+    except gspread.SpreadsheetNotFound:
+        spreadsheet = gc.create(spreadsheet_name)
+        st.warning(
+            f"Created a new spreadsheet named `{spreadsheet_name}`. "
+            "It belongs to the service account. To see it in your Drive, share it with your personal Google account."
+        )
 
     try:
         worksheet = spreadsheet.worksheet(worksheet_name)
     except gspread.WorksheetNotFound:
-        worksheet = spreadsheet.add_worksheet(
-            title=worksheet_name,
-            rows=1000,
-            cols=len(REQUIRED_HEADERS),
-        )
-        worksheet.append_row(REQUIRED_HEADERS)
+        worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=len(HEADERS))
+        worksheet.append_row(HEADERS)
 
-    ensure_headers(worksheet)
-    return worksheet
-
-
-def ensure_headers(worksheet: Any) -> None:
-    """Make sure the worksheet has the required header row."""
-    existing_headers = worksheet.row_values(1)
-    if existing_headers != REQUIRED_HEADERS:
+    if worksheet.row_values(1) != HEADERS:
         worksheet.clear()
-        worksheet.append_row(REQUIRED_HEADERS)
+        worksheet.append_row(HEADERS)
+
+    return worksheet, spreadsheet.url
 
 
-def load_records() -> pd.DataFrame:
-    """Load all records from Google Sheets into a normalized DataFrame."""
-    worksheet = get_worksheet()
+def load_data(worksheet) -> pd.DataFrame:
     records = worksheet.get_all_records()
-
     if not records:
-        return pd.DataFrame(columns=REQUIRED_HEADERS)
+        return pd.DataFrame(columns=HEADERS)
 
     df = pd.DataFrame(records)
-    for col in REQUIRED_HEADERS:
+    for col in HEADERS:
         if col not in df.columns:
             df[col] = ""
 
-    df = df[REQUIRED_HEADERS]
+    df = df[HEADERS]
     df["date"] = df["date"].astype(str)
     df["calories"] = pd.to_numeric(df["calories"], errors="coerce").fillna(0).astype(int)
-    df["exercise"] = df["exercise"].astype(str)
-    df["notes"] = df["notes"].astype(str)
-    df["updated_at"] = df["updated_at"].astype(str)
+    df["exercise_minutes"] = pd.to_numeric(df["exercise_minutes"], errors="coerce").fillna(0).astype(int)
     return df
 
 
-def find_row_by_date(selected_date: date) -> int | None:
-    """Return the 1-based worksheet row number for a date, or None if missing."""
-    worksheet = get_worksheet()
-    all_dates = worksheet.col_values(1)
-    target = selected_date.isoformat()
-
-    # Skip header row at index 0.
-    for index, value in enumerate(all_dates[1:], start=2):
-        if value == target:
-            return index
+def find_row_number_by_date(worksheet, selected_date: str):
+    dates = worksheet.col_values(1)
+    for idx, value in enumerate(dates, start=1):
+        if value == selected_date:
+            return idx
     return None
 
 
-def upsert_record(selected_date: date, calories: int, exercise: str, notes: str) -> None:
-    """Insert or update a record for one date."""
-    worksheet = get_worksheet()
-    row_number = find_row_by_date(selected_date)
+def upsert_entry(worksheet, selected_date, calories, exercise, exercise_minutes, notes):
+    selected_date_str = selected_date.isoformat()
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row = [selected_date_str, int(calories), exercise.strip(), int(exercise_minutes), notes.strip(), now]
+    row_number = find_row_number_by_date(worksheet, selected_date_str)
 
-    values = [
-        selected_date.isoformat(),
-        int(calories),
-        exercise.strip(),
-        notes.strip(),
-        now,
-    ]
+    if row_number:
+        worksheet.update(f"A{row_number}:F{row_number}", [row])
+        return "updated"
 
-    if row_number is None:
-        worksheet.append_row(values)
-    else:
-        worksheet.update(f"A{row_number}:E{row_number}", [values])
-
-    st.cache_data.clear()
+    worksheet.append_row(row)
+    return "added"
 
 
-def delete_record(selected_date: date) -> bool:
-    """Delete the record for one date. Returns True if deleted."""
-    worksheet = get_worksheet()
-    row_number = find_row_by_date(selected_date)
-
-    if row_number is None:
+def delete_entry(worksheet, selected_date):
+    selected_date_str = selected_date.isoformat()
+    row_number = find_row_number_by_date(worksheet, selected_date_str)
+    if not row_number:
         return False
-
     worksheet.delete_rows(row_number)
-    st.cache_data.clear()
     return True
 
 
-def get_record_for_date(df: pd.DataFrame, selected_date: date) -> dict[str, Any]:
-    """Return record fields for selected date, or blank defaults."""
-    target = selected_date.isoformat()
-    matches = df[df["date"] == target]
+with st.spinner("Connecting to Google Sheets..."):
+    worksheet, sheet_url = get_or_create_worksheet()
+    df = load_data(worksheet)
 
-    if matches.empty:
-        return {
-            "date": target,
-            "calories": 0,
-            "exercise": "",
-            "notes": "",
-            "updated_at": "",
-        }
+st.success("Connected to Google Sheets.")
+st.link_button("Open Google Sheet", sheet_url)
 
-    return matches.iloc[0].to_dict()
+today = date.today()
+calendar_days = [today + timedelta(days=i) for i in range(30)]
+df_by_date = {row["date"]: row for _, row in df.iterrows()}
 
+st.subheader("📅 Next 30 Days")
 
-# -----------------------------
-# UI helpers
-# -----------------------------
-def next_30_days() -> list[date]:
-    today = date.today()
-    return [today + timedelta(days=i) for i in range(30)]
+if "selected_date" not in st.session_state:
+    st.session_state.selected_date = today.isoformat()
 
+st.markdown(
+    """
+    <style>
+    div[data-testid="stButton"] > button {
+        width: 100%;
+        min-height: 78px;
+        white-space: pre-wrap;
+        border-radius: 14px;
+        font-size: 0.9rem;
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
 
-def render_calendar(days: list[date], df: pd.DataFrame) -> date:
-    """Render a simple 30-day calendar grid and return selected date."""
-    st.subheader("Next 30 Days")
+for week_start in range(0, 30, 7):
+    cols = st.columns(7)
+    for i, day in enumerate(calendar_days[week_start:week_start + 7]):
+        day_str = day.isoformat()
+        has_entry = day_str in df_by_date
+        selected = st.session_state.selected_date == day_str
 
-    date_options = {day.strftime("%a %b %-d") if hasattr(day, "strftime") else str(day): day for day in days}
+        try:
+            label = day.strftime("%a\n%b %-d")
+        except ValueError:
+            label = day.strftime("%a\n%b %#d")
 
-    # Windows compatibility for day without leading zero if needed.
-    date_options = {}
-    for day in days:
-        label = f"{day.strftime('%a')} {day.strftime('%b')} {day.day}"
-        has_entry = not df[df["date"] == day.isoformat()].empty
         if has_entry:
-            label += " ✅"
-        date_options[label] = day
+            calories = int(df_by_date[day_str].get("calories", 0))
+            minutes = int(df_by_date[day_str].get("exercise_minutes", 0))
+            label += f"\n🔥 {calories} cal\n🏃 {minutes} min"
+        else:
+            label += "\n—"
 
-    labels = list(date_options.keys())
+        if selected:
+            label = "✅ " + label
 
-    if "selected_date" not in st.session_state:
-        st.session_state.selected_date = days[0].isoformat()
+        if cols[i].button(label, key=f"day_{day_str}"):
+            st.session_state.selected_date = day_str
+            st.rerun()
 
-    selected_label = None
-    current_selected = date.fromisoformat(st.session_state.selected_date)
-
-    cols_per_row = 7
-    for row_start in range(0, len(labels), cols_per_row):
-        cols = st.columns(cols_per_row)
-        for col, label in zip(cols, labels[row_start : row_start + cols_per_row]):
-            day = date_options[label]
-            is_selected = day == current_selected
-            button_label = f"🔵 {label}" if is_selected else label
-            if col.button(button_label, key=f"day_{day.isoformat()}", use_container_width=True):
-                selected_label = label
-                st.session_state.selected_date = day.isoformat()
-                st.rerun()
-
-    if selected_label is not None:
-        return date_options[selected_label]
-
-    return date.fromisoformat(st.session_state.selected_date)
-
-
-def render_summary(df: pd.DataFrame, days: list[date]) -> None:
-    """Render top-level summary metrics."""
-    start = days[0].isoformat()
-    end = days[-1].isoformat()
-    period_df = df[(df["date"] >= start) & (df["date"] <= end)]
-
-    total_days_logged = len(period_df)
-    total_calories = int(period_df["calories"].sum()) if not period_df.empty else 0
-    avg_calories = int(period_df["calories"].mean()) if not period_df.empty else 0
-
-    metric_cols = st.columns(3)
-    metric_cols[0].metric("Days logged", total_days_logged)
-    metric_cols[1].metric("Total calories", f"{total_calories:,}")
-    metric_cols[2].metric("Average calories", f"{avg_calories:,}")
-
-
-# -----------------------------
-# Main app
-# -----------------------------
-st.title("📅 30-Day Calories + Exercise Tracker")
-st.caption("Google Sheets powered backend. Select a day, save your entry, update it, or delete it.")
-
-try:
-    df = load_records()
-except Exception as exc:
-    st.error("Could not connect to Google Sheets. Check your Streamlit secrets and sheet sharing permissions.")
-    st.exception(exc)
-    st.stop()
-
-all_days = next_30_days()
-render_summary(df, all_days)
+selected_date = date.fromisoformat(st.session_state.selected_date)
+selected_date_str = selected_date.isoformat()
+existing = df_by_date.get(selected_date_str)
 
 st.divider()
+st.subheader(f"✍️ Entry for {selected_date.strftime('%A, %B %d, %Y')}")
 
-left, right = st.columns([1.15, 1])
+existing_calories = int(existing["calories"]) if existing is not None else 0
+existing_exercise = str(existing["exercise"]) if existing is not None else ""
+existing_minutes = int(existing["exercise_minutes"]) if existing is not None else 0
+existing_notes = str(existing["notes"]) if existing is not None else ""
 
-with left:
-    selected_date = render_calendar(all_days, df)
+with st.form("entry_form"):
+    calories = st.number_input("Calories", min_value=0, max_value=20000, value=existing_calories, step=50)
+    exercise = st.text_input("Exercise", value=existing_exercise, placeholder="walking, lifting, tennis, yoga")
+    exercise_minutes = st.number_input("Exercise minutes", min_value=0, max_value=1000, value=existing_minutes, step=5)
+    notes = st.text_area("Notes", value=existing_notes, placeholder="Meals, mood, soreness, hunger, etc.")
+    submitted = st.form_submit_button("Save / Update Entry")
 
-with right:
-    st.subheader("Daily Entry")
-    record = get_record_for_date(df, selected_date)
+if submitted:
+    action = upsert_entry(worksheet, selected_date, calories, exercise, exercise_minutes, notes)
+    st.success(f"Entry {action}.")
+    st.rerun()
 
-    with st.form("daily_entry_form", clear_on_submit=False):
-        st.write(f"**Selected date:** {selected_date.strftime('%A, %B %d, %Y')}")
-
-        calories = st.number_input(
-            "Calories",
-            min_value=0,
-            max_value=20000,
-            value=int(record.get("calories", 0) or 0),
-            step=50,
-        )
-
-        exercise = st.text_area(
-            "Exercise",
-            value=str(record.get("exercise", "") or ""),
-            placeholder="Example: 30 min walk, push day, tennis, rest day...",
-        )
-
-        notes = st.text_area(
-            "Notes",
-            value=str(record.get("notes", "") or ""),
-            placeholder="Optional notes about hunger, sleep, mood, etc.",
-        )
-
-        submitted = st.form_submit_button("Save / Update", use_container_width=True)
-
-    delete_clicked = st.button("Delete this day's entry", type="secondary", use_container_width=True)
-
-    if submitted:
-        upsert_record(selected_date, calories, exercise, notes)
-        st.success("Entry saved.")
-        st.rerun()
-
-    if delete_clicked:
-        was_deleted = delete_record(selected_date)
-        if was_deleted:
+c1, c2 = st.columns([1, 4])
+with c1:
+    if st.button("🗑️ Delete Entry", disabled=existing is None):
+        if delete_entry(worksheet, selected_date):
             st.success("Entry deleted.")
             st.rerun()
         else:
-            st.info("No entry existed for this date.")
-
-    if record.get("updated_at"):
-        st.caption(f"Last updated: {record['updated_at']}")
+            st.warning("No entry found for this date.")
+with c2:
+    if st.button("🔄 Refresh from Google Sheets"):
+        st.rerun()
 
 st.divider()
+st.subheader("📊 Summary")
 
-st.subheader("Logged Entries")
-visible_start = all_days[0].isoformat()
-visible_end = all_days[-1].isoformat()
-visible_df = df[(df["date"] >= visible_start) & (df["date"] <= visible_end)].copy()
-
-if visible_df.empty:
-    st.info("No entries yet for the next 30 days.")
+if df.empty:
+    st.info("No entries yet.")
 else:
-    visible_df = visible_df.sort_values("date")
-    st.dataframe(visible_df, use_container_width=True, hide_index=True)
+    visible_df = df[df["date"].isin([d.isoformat() for d in calendar_days])].copy()
 
-    csv = visible_df.to_csv(index=False).encode("utf-8")
-    st.download_button(
-        "Download visible entries as CSV",
-        data=csv,
-        file_name="health_calendar_entries.csv",
-        mime="text/csv",
-        use_container_width=True,
+    total_calories = int(visible_df["calories"].sum()) if not visible_df.empty else 0
+    avg_calories = int(visible_df["calories"].mean()) if not visible_df.empty else 0
+    total_minutes = int(visible_df["exercise_minutes"].sum()) if not visible_df.empty else 0
+    logged_days = len(visible_df)
+
+    m1, m2, m3, m4 = st.columns(4)
+    m1.metric("Logged days", logged_days)
+    m2.metric("Total calories", f"{total_calories:,}")
+    m3.metric("Avg calories/day", f"{avg_calories:,}")
+    m4.metric("Exercise minutes", f"{total_minutes:,}")
+
+    chart_df = visible_df.copy()
+    chart_df["date"] = pd.to_datetime(chart_df["date"])
+    chart_df = chart_df.sort_values("date")
+
+    if not chart_df.empty:
+        st.write("Calories by day")
+        st.bar_chart(chart_df.set_index("date")["calories"])
+        st.write("Exercise minutes by day")
+        st.bar_chart(chart_df.set_index("date")["exercise_minutes"])
+
+    st.write("All entries")
+    st.dataframe(visible_df.sort_values("date"), use_container_width=True, hide_index=True)
+
+with st.expander("Setup notes"):
+    st.markdown(
+        """
+        In Streamlit Cloud → App → Settings → Secrets, paste:
+
+        ```toml
+        gcp_service_account_json = '''
+        {
+          "type": "service_account",
+          "project_id": "...",
+          "private_key_id": "...",
+          "private_key": "-----BEGIN PRIVATE KEY-----\\n...\\n-----END PRIVATE KEY-----\\n",
+          "client_email": "...",
+          "client_id": "...",
+          "auth_uri": "https://accounts.google.com/o/oauth2/auth",
+          "token_uri": "https://oauth2.googleapis.com/token",
+          "auth_provider_x509_cert_url": "https://www.googleapis.com/oauth2/v1/certs",
+          "client_x509_cert_url": "...",
+          "universe_domain": "googleapis.com"
+        }
+        '''
+
+        spreadsheet_name = "Streamlit Calories Tracker"
+        worksheet_name = "daily_log"
+        ```
+
+        Also share the Google Sheet with your service account email as Editor.
+        If the app creates the spreadsheet, it belongs to the service account; use the Open Google Sheet button and share it with your personal Google account.
+        """
     )
 

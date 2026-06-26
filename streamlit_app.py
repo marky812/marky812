@@ -117,7 +117,11 @@ def delete_entry(worksheet, selected_date):
 
 
 with st.spinner("Connecting to Google Sheets..."):
+    try:
     worksheet, sheet_url = get_or_create_worksheet()
+except Exception as e:
+    st.exception(e)
+    st.stop()
     df = load_data(worksheet)
 
 st.success("Connected to Google Sheets.")

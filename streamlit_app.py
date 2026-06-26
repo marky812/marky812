@@ -1,4 +1,3 @@
-import html
 import json
 from datetime import date, datetime, timedelta
 
@@ -8,28 +7,132 @@ import pandas as pd
 import streamlit as st
 from google.oauth2.service_account import Credentials
 
-# ----------------------------------------------------------------------------
-# Page config
-# ----------------------------------------------------------------------------
 st.set_page_config(
-    page_title="30-Day Calories + Exercise Tracker",
-    page_icon="🔥",
+    page_title="Wellness Tracker",
+    page_icon="◐",
     layout="wide",
     initial_sidebar_state="collapsed",
 )
 
-# ----------------------------------------------------------------------------
-# Google Sheets backend  (unchanged logic — only the UI around it is new)
-# ----------------------------------------------------------------------------
+# =============================================================================
+# Google Sheets setup  (logic unchanged — only the UI around it is new)
+# =============================================================================
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
     "https://www.googleapis.com/auth/drive",
 ]
 
 DEFAULT_SPREADSHEET_NAME = "Streamlit Calories Tracker"
-DEFAULT_WORKSHEET_NAME = "daily_log"
+# New worksheet name so your old daily_log sheet does not get overwritten.
+DEFAULT_WORKSHEET_NAME = "wellness_log_v2"
 
-HEADERS = ["date", "calories", "exercise", "exercise_minutes", "notes", "updated_at"]
+HEADERS = [
+    "date",
+    "night_ate",
+    "took_medicine",
+    "meditation_listen",
+    "no_food_4h_before_bed",
+    "items_json",
+    "total_calories",
+    "total_protein",
+    "notes",
+    "updated_at",
+]
+
+BOOL_COLUMNS = [
+    "night_ate",
+    "took_medicine",
+    "meditation_listen",
+    "no_food_4h_before_bed",
+]
+
+HABIT_LABELS = {
+    "night_ate": "Night ate?",
+    "took_medicine": "Took medicine?",
+    "meditation_listen": "Meditation / Listen?",
+    "no_food_4h_before_bed": "No food 4 hours before bed?",
+}
+
+
+# =============================================================================
+# Helpers  (unchanged)
+# =============================================================================
+def parse_bool(value) -> bool:
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return False
+    return str(value).strip().lower() in {"true", "yes", "y", "1", "checked", "x"}
+
+
+def safe_int(value, default=0) -> int:
+    try:
+        if value in (None, ""):
+            return default
+        return int(float(value))
+    except (TypeError, ValueError):
+        return default
+
+
+def safe_float(value, default=0.0) -> float:
+    try:
+        if value in (None, ""):
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def parse_items(value):
+    if value is None:
+        return []
+
+    value_str = str(value).strip()
+    if not value_str:
+        return []
+
+    try:
+        raw_items = json.loads(value_str)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(raw_items, list):
+        return []
+
+    cleaned = []
+    for item in raw_items:
+        if not isinstance(item, dict):
+            continue
+
+        name = str(item.get("name", "")).strip()
+        calories = safe_int(item.get("calories", 0))
+        protein = safe_float(item.get("protein", 0.0))
+
+        if name or calories or protein:
+            cleaned.append({"name": name, "calories": calories, "protein": round(protein, 1)})
+
+    return cleaned
+
+
+def clean_items(items):
+    cleaned = []
+    for item in items:
+        name = str(item.get("name", "")).strip()
+        calories = max(0, safe_int(item.get("calories", 0)))
+        protein = max(0.0, safe_float(item.get("protein", 0.0)))
+
+        if name or calories or protein:
+            cleaned.append({"name": name, "calories": calories, "protein": round(protein, 1)})
+
+    return cleaned
+
+
+def total_calories(items) -> int:
+    return int(sum(safe_int(item.get("calories", 0)) for item in items))
+
+
+def total_protein(items) -> float:
+    return round(sum(safe_float(item.get("protein", 0.0)) for item in items), 1)
 
 
 @st.cache_resource(show_spinner=False)
@@ -64,54 +167,106 @@ def get_or_create_worksheet():
     except gspread.WorksheetNotFound:
         worksheet = spreadsheet.add_worksheet(title=worksheet_name, rows=1000, cols=len(HEADERS))
         worksheet.append_row(HEADERS)
+        return worksheet, spreadsheet.url, worksheet_name
 
-    if worksheet.row_values(1) != HEADERS:
+    current_headers = worksheet.row_values(1)
+
+    # If someone points this app at the old daily_log schema, do not clear it.
+    # Instead, create/use a v2 worksheet beside it.
+    if current_headers and current_headers != HEADERS:
+        v2_name = f"{worksheet_name}_v2" if not worksheet_name.endswith("_v2") else worksheet_name
+
+        if v2_name != worksheet_name:
+            st.warning(
+                f"`{worksheet_name}` has a different schema, so this app is using `{v2_name}` instead. "
+                "Your old sheet was not changed."
+            )
+            try:
+                worksheet = spreadsheet.worksheet(v2_name)
+            except gspread.WorksheetNotFound:
+                worksheet = spreadsheet.add_worksheet(title=v2_name, rows=1000, cols=len(HEADERS))
+                worksheet.append_row(HEADERS)
+                return worksheet, spreadsheet.url, v2_name
+
+            current_headers = worksheet.row_values(1)
+
+    if not current_headers:
+        worksheet.append_row(HEADERS)
+    elif current_headers != HEADERS:
+        # Only reached for a v2 worksheet with a bad/incomplete schema.
         worksheet.clear()
         worksheet.append_row(HEADERS)
 
-    return worksheet, spreadsheet.url
+    return worksheet, spreadsheet.url, worksheet.title
 
 
-def load_data(worksheet):
+@st.cache_data(ttl=30, show_spinner=False)
+def load_data_cached(sheet_title: str, cache_buster: str):
+    # cache_buster lets us refresh after saves/deletes.
+    worksheet, _, _ = get_or_create_worksheet()
     records = worksheet.get_all_records()
+
     if not records:
         return pd.DataFrame(columns=HEADERS)
 
     df = pd.DataFrame(records)
+
     for col in HEADERS:
         if col not in df.columns:
             df[col] = ""
 
-    df = df[HEADERS]
+    df = df[HEADERS].copy()
     df["date"] = df["date"].astype(str)
-    df["calories"] = pd.to_numeric(df["calories"], errors="coerce").fillna(0).astype(int)
-    df["exercise_minutes"] = pd.to_numeric(df["exercise_minutes"], errors="coerce").fillna(0).astype(int)
+
+    for col in BOOL_COLUMNS:
+        df[col] = df[col].apply(parse_bool)
+
+    df["total_calories"] = pd.to_numeric(df["total_calories"], errors="coerce").fillna(0).astype(int)
+    df["total_protein"] = pd.to_numeric(df["total_protein"], errors="coerce").fillna(0.0).astype(float)
+    df["updated_at"] = df["updated_at"].astype(str)
+
     return df
 
 
-@st.cache_data(ttl=120, show_spinner=False)
-def load_data_cached(_worksheet, version):
-    # `version` busts the cache after a write; selecting a day re-uses the cache (fast).
-    return load_data(_worksheet)
-
-
-def find_row_number_by_date(worksheet, selected_date):
+def find_row_number_by_date(worksheet, selected_date_str):
     dates = worksheet.col_values(1)
     for idx, value in enumerate(dates, start=1):
-        if value == selected_date:
+        if value == selected_date_str:
             return idx
     return None
 
 
-def upsert_entry(worksheet, selected_date, calories, exercise, exercise_minutes, notes):
+def upsert_entry(
+    worksheet,
+    selected_date,
+    night_ate,
+    took_medicine,
+    meditation_listen,
+    no_food_4h_before_bed,
+    items,
+    notes,
+):
     selected_date_str = selected_date.isoformat()
+    cleaned_items = clean_items(items)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    row = [selected_date_str, int(calories), exercise.strip(), int(exercise_minutes), notes.strip(), now]
+    row = [
+        selected_date_str,
+        bool(night_ate),
+        bool(took_medicine),
+        bool(meditation_listen),
+        bool(no_food_4h_before_bed),
+        json.dumps(cleaned_items),
+        total_calories(cleaned_items),
+        total_protein(cleaned_items),
+        notes.strip(),
+        now,
+    ]
+
     row_number = find_row_number_by_date(worksheet, selected_date_str)
 
     if row_number:
-        worksheet.update(f"A{row_number}:F{row_number}", [row])
+        worksheet.update(f"A{row_number}:J{row_number}", [row])
         return "updated"
 
     worksheet.append_row(row)
@@ -121,224 +276,251 @@ def upsert_entry(worksheet, selected_date, calories, exercise, exercise_minutes,
 def delete_entry(worksheet, selected_date):
     selected_date_str = selected_date.isoformat()
     row_number = find_row_number_by_date(worksheet, selected_date_str)
+
     if not row_number:
         return False
+
     worksheet.delete_rows(row_number)
     return True
 
 
-# ----------------------------------------------------------------------------
-# Styling
-# ----------------------------------------------------------------------------
+def clear_food_widget_state():
+    for key in list(st.session_state.keys()):
+        if key.startswith("food_name_") or key.startswith("food_cal_") or key.startswith("food_protein_"):
+            del st.session_state[key]
+
+
+def load_items_into_state(items):
+    clear_food_widget_state()
+    st.session_state.food_items = items if items else [{"name": "", "calories": 0, "protein": 0.0}]
+
+
+def get_items_from_widgets():
+    items = []
+    count = len(st.session_state.get("food_items", []))
+
+    for idx in range(count):
+        items.append(
+            {
+                "name": st.session_state.get(f"food_name_{idx}", ""),
+                "calories": st.session_state.get(f"food_cal_{idx}", 0),
+                "protein": st.session_state.get(f"food_protein_{idx}", 0.0),
+            }
+        )
+
+    return clean_items(items)
+
+
+def reset_day_widget_state(date_str):
+    for prefix in ("night_ate_", "took_medicine_", "meditation_listen_", "no_food_4h_", "notes_"):
+        st.session_state.pop(prefix + date_str, None)
+
+
+def get_window_df(df, days: int):
+    if df.empty:
+        return df.copy()
+
+    end = pd.Timestamp(date.today())
+    start = end - pd.Timedelta(days=days - 1)
+
+    tmp = df.copy()
+    tmp["date_dt"] = pd.to_datetime(tmp["date"], errors="coerce")
+    tmp = tmp[(tmp["date_dt"] >= start) & (tmp["date_dt"] <= end)]
+    return tmp.sort_values("date_dt")
+
+
+# =============================================================================
+# Styling — calm "evening check-in" identity
+# =============================================================================
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,500;9..144,600&family=Inter:wght@400;500;600;700;800&display=swap');
 
     :root{
-      --cal-1:#FF8E53; --cal-2:#FF6B6B; --cal-soft:#fff1ec; --cal-ink:#e2562f;
-      --ex-soft:#e9faf2; --ex-ink:#0a8f5b;
-      --ink:#1f2937; --muted:#6b7280; --line:#e8eaed; --card:#ffffff;
+      --tw-1:#6366F1; --tw-2:#8B5CF6; --tw-3:#A855F7;
+      --cal-soft:#FEF3C7; --cal-ink:#B45309;
+      --pro-soft:#CCFBF1; --pro-ink:#0F766E;
+      --ink:#1E1B2E; --muted:#6B6880; --line:#E9E8F1; --card:#FFFFFF; --bg-soft:#FAFAFF;
+      --dot:#7C6CF0;
     }
 
     html, body, [class*="css"], .stMarkdown, button, input, textarea, select{
       font-family:'Inter',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
     }
-
     .block-container{ padding-top:1.4rem; padding-bottom:3rem; max-width:1180px; }
     #MainMenu, footer{ visibility:hidden; }
 
-    /* primary buttons -> warm gradient */
-    button[kind="primary"], button[kind="primaryFormSubmit"]{
-      background-image:linear-gradient(135deg,var(--cal-1),var(--cal-2)) !important;
-      border:0 !important; color:#fff !important; font-weight:700 !important;
-      box-shadow:0 8px 18px -10px rgba(255,107,107,.7) !important;
+    div[data-testid="stButton"] > button{
+      width:100%; border-radius:12px; border:1px solid var(--line);
+      min-height:42px; font-weight:600; transition:all .12s ease;
     }
-    button[kind="primary"]:hover, button[kind="primaryFormSubmit"]:hover{ filter:brightness(1.04); }
-
+    div[data-testid="stButton"] > button:hover{ border-color:#c9c5dd; transform:translateY(-1px); }
+    button[kind="primary"], button[kind="primaryFormSubmit"]{
+      background-image:linear-gradient(135deg,var(--tw-1),var(--tw-2)) !important;
+      border:0 !important; color:#fff !important;
+      box-shadow:0 8px 18px -10px rgba(124,92,240,.7) !important;
+    }
+    button[kind="primary"]:hover, button[kind="primaryFormSubmit"]:hover{ filter:brightness(1.05); }
     .stTextInput input, .stNumberInput input, .stTextArea textarea{ border-radius:10px !important; }
 
     /* hero */
     .hero{
-      display:flex; align-items:center; gap:18px;
-      background:linear-gradient(120deg,#FF8E53 0%,#FF6B6B 58%,#ff5e7e 100%);
-      color:#fff; padding:22px 26px; border-radius:20px;
-      box-shadow:0 14px 34px -14px rgba(255,107,107,.6); margin-bottom:20px;
+      display:flex; align-items:center; justify-content:space-between; gap:22px; flex-wrap:wrap;
+      background:linear-gradient(125deg,#6366F1 0%,#7C5CF6 52%,#A855F7 100%);
+      color:#fff; padding:26px 30px; border-radius:24px;
+      box-shadow:0 16px 40px -16px rgba(124,92,240,.6); margin-bottom:20px;
     }
-    .hero-emoji{ font-size:42px; line-height:1; filter:drop-shadow(0 2px 6px rgba(0,0,0,.18)); }
-    .hero-title{ font-size:1.75rem; font-weight:800; letter-spacing:-.02em; }
-    .hero-sub{ font-size:.95rem; opacity:.93; font-weight:500; margin-top:2px; }
+    .hero-left{ display:flex; align-items:center; gap:16px; }
+    .hero-mark{ font-size:32px; line-height:1; opacity:.95; }
+    .hero-title{ font-family:'Fraunces',Georgia,serif !important; font-size:2.05rem; font-weight:600; letter-spacing:-.01em; line-height:1.05; }
+    .hero-sub{ font-size:.95rem; opacity:.9; font-weight:500; margin-top:3px; }
+    .hero-stat{ text-align:right; }
+    .hero-stat .v{ font-size:1.55rem; font-weight:800; letter-spacing:-.02em; line-height:1; }
+    .hero-stat .l{ font-size:.72rem; opacity:.85; font-weight:600; text-transform:uppercase; letter-spacing:.05em; margin-top:5px; }
 
-    /* KPI tiles */
-    .kpi-grid{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:24px; }
-    .kpi{
-      background:var(--card); border:1px solid var(--line); border-radius:16px;
-      padding:15px 18px; box-shadow:0 1px 2px rgba(16,24,40,.04);
-    }
-    .kpi-icon{ font-size:18px; }
-    .kpi-val{ font-size:1.6rem; font-weight:800; color:var(--ink); letter-spacing:-.02em; margin-top:6px; line-height:1.1; }
-    .kpi-label{ font-size:.74rem; color:var(--muted); font-weight:700; margin-top:2px; text-transform:uppercase; letter-spacing:.05em; }
-
-    /* section title row */
-    .sec-row{ display:flex; align-items:center; justify-content:space-between; margin:8px 0 14px; }
-    .sec-title{ font-size:1.18rem; font-weight:800; color:var(--ink); letter-spacing:-.01em; margin:0; }
-    .today-pill{
-      font-size:.8rem; font-weight:700; color:var(--cal-ink); text-decoration:none;
-      background:var(--cal-soft); padding:6px 13px; border-radius:999px; transition:filter .12s ease;
-    }
-    .today-pill:hover{ filter:brightness(.97); }
+    /* eyebrows + section rows */
+    .eyebrow{ font-size:.74rem; font-weight:700; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin:8px 0 12px; }
+    .sec-row{ display:flex; align-items:center; justify-content:space-between; margin:8px 0 12px; }
+    .today-pill{ font-size:.8rem; font-weight:700; color:var(--tw-2); text-decoration:none; background:#F1EEFE; padding:6px 13px; border-radius:999px; }
+    .today-pill:hover{ filter:brightness(.98); }
 
     /* calendar */
     .cal-head{ display:grid; grid-template-columns:repeat(7,1fr); gap:8px; margin-bottom:8px; }
     .cal-head span{ text-align:center; font-size:.7rem; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
     .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:8px; }
-
     .day{
-      display:flex; flex-direction:column; justify-content:space-between;
-      min-height:88px; padding:9px 10px; border-radius:14px;
+      display:flex; flex-direction:column; gap:6px; min-height:96px; padding:9px 10px; border-radius:14px;
       background:var(--card); border:1px solid var(--line); color:var(--ink);
       text-decoration:none; transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease;
     }
-    .day:hover{ transform:translateY(-2px); box-shadow:0 10px 22px -12px rgba(16,24,40,.28); border-color:#d8dade; }
+    .day:hover{ transform:translateY(-2px); box-shadow:0 10px 22px -12px rgba(30,27,46,.26); border-color:#dcdaea; }
     .day-top{ display:flex; align-items:baseline; justify-content:space-between; }
     .day .dow{ font-size:.7rem; font-weight:700; color:var(--muted); }
     .day .dom{ font-size:1.05rem; font-weight:800; }
-    .day-empty{ font-size:1.15rem; color:#cdd1d6; font-weight:700; align-self:center; margin-top:8px; }
-    .day-stats{ display:flex; flex-wrap:wrap; gap:4px; }
-    .chip{ font-size:.66rem; font-weight:700; padding:2px 6px; border-radius:999px; white-space:nowrap; }
+    .mon-tag{ font-size:.58rem; font-weight:800; color:#fff; background:#A6A3B8; padding:1px 5px; border-radius:6px; margin-left:5px; vertical-align:middle; }
+    .day-empty{ color:#cfcde0; font-weight:700; font-size:1.05rem; margin:auto; }
+    .chips{ display:flex; flex-wrap:wrap; gap:4px; }
+    .chip{ font-size:.64rem; font-weight:700; padding:2px 6px; border-radius:999px; white-space:nowrap; }
     .chip.cal{ background:var(--cal-soft); color:var(--cal-ink); }
-    .chip.ex{ background:var(--ex-soft); color:var(--ex-ink); }
-    .mon-tag{ font-size:.58rem; font-weight:800; color:#fff; background:#9aa1ab; padding:1px 5px; border-radius:6px; margin-left:5px; vertical-align:middle; }
+    .chip.pro{ background:var(--pro-soft); color:var(--pro-ink); }
+    .dots{ display:flex; gap:5px; margin-top:auto; }
+    .dot{ width:8px; height:8px; border-radius:50%; background:transparent; border:1.5px solid #d7d4e6; }
+    .dot.on{ background:var(--dot); border-color:var(--dot); }
 
-    .day.is-logged{ border-color:#ffd9cc; background:linear-gradient(180deg,#fff,#fff7f4); }
-    .day.is-today{ border-color:var(--cal-2); box-shadow:0 0 0 2px rgba(255,107,107,.18); }
+    .day.is-logged{ border-color:#e2dcfb; background:linear-gradient(180deg,#fff,#fbfaff); }
+    .day.is-today{ border-color:var(--tw-2); box-shadow:0 0 0 2px rgba(139,92,246,.18); }
     .day.is-selected{
-      background:linear-gradient(135deg,var(--cal-1),var(--cal-2)); border-color:transparent; color:#fff;
-      box-shadow:0 12px 24px -12px rgba(255,107,107,.75);
+      background:linear-gradient(140deg,var(--tw-1),var(--tw-2)); border-color:transparent; color:#fff;
+      box-shadow:0 12px 24px -12px rgba(124,92,240,.72);
     }
     .day.is-selected .dow, .day.is-selected .dom, .day.is-selected .day-empty{ color:#fff; }
-    .day.is-selected .chip.cal, .day.is-selected .chip.ex{ background:rgba(255,255,255,.22); color:#fff; }
+    .day.is-selected .chip.cal, .day.is-selected .chip.pro{ background:rgba(255,255,255,.22); color:#fff; }
+    .day.is-selected .dot{ border-color:rgba(255,255,255,.55); }
+    .day.is-selected .dot.on{ background:#fff; border-color:#fff; }
 
-    /* snapshot */
-    .snap-row{ display:flex; align-items:center; justify-content:space-between; padding:9px 0; border-bottom:1px dashed var(--line); }
-    .snap-row:last-of-type{ border-bottom:none; }
-    .snap-k{ color:var(--muted); font-weight:600; font-size:.85rem; }
-    .snap-v{ color:var(--ink); font-weight:800; font-size:.95rem; }
-    .snap-empty{ color:var(--muted); font-size:.9rem; text-align:center; padding:16px 6px; line-height:1.5; }
+    /* totals cards */
+    .tcard{ border:1px solid var(--line); border-radius:18px; padding:18px; text-align:center; background:var(--bg-soft); margin-bottom:12px; }
+    .tcard .tnum{ font-size:2rem; font-weight:800; letter-spacing:-.03em; line-height:1; color:var(--ink); }
+    .tcard .tlab{ color:var(--muted); font-size:.82rem; margin-top:6px; font-weight:600; }
+    .tcard.cal .tnum{ color:var(--cal-ink); }
+    .tcard.pro .tnum{ color:var(--pro-ink); }
 
+    /* metric tiles */
+    div[data-testid="stMetric"]{ border:1px solid var(--line); border-radius:16px; padding:14px 16px; background:var(--bg-soft); }
+
+    .food-h{ font-size:.72rem; opacity:.6; font-weight:700; text-transform:uppercase; letter-spacing:.07em; }
     .foot{ color:var(--muted); font-size:.78rem; text-align:center; margin-top:30px; }
 
     @media (max-width:760px){
-      .kpi-grid{ grid-template-columns:repeat(2,1fr); }
-      .day{ min-height:64px; padding:6px; }
-      .day .dom{ font-size:.92rem; }
-      .chip{ display:none; }
-      .day-empty{ margin-top:2px; }
+      .hero-stat{ text-align:left; }
+      .day{ min-height:62px; padding:6px; gap:3px; }
+      .chips, .day .dow{ display:none; }
+      .dot{ width:6px; height:6px; }
+      .day .dom{ font-size:.9rem; }
     }
     </style>
     """,
     unsafe_allow_html=True,
 )
 
-# ----------------------------------------------------------------------------
-# Connect + load
-# ----------------------------------------------------------------------------
-if "data_version" not in st.session_state:
-    st.session_state.data_version = 0
+
+# =============================================================================
+# Load data
+# =============================================================================
+if "cache_buster" not in st.session_state:
+    st.session_state.cache_buster = datetime.now().isoformat()
 
 with st.spinner("Connecting to Google Sheets..."):
     try:
-        worksheet, sheet_url = get_or_create_worksheet()
-        df = load_data_cached(worksheet, st.session_state.data_version)
+        worksheet, sheet_url, active_worksheet_name = get_or_create_worksheet()
+        df = load_data_cached(active_worksheet_name, st.session_state.cache_buster)
     except Exception as e:
         st.exception(e)
         st.stop()
 
-# Sidebar: status, link, optional reference line, refresh
-with st.sidebar:
-    st.markdown("### 🔥 Tracker")
-    st.success("Connected to Google Sheets")
-    st.link_button("Open Google Sheet", sheet_url, use_container_width=True)
-    st.divider()
-    target = st.number_input(
-        "Daily calorie reference (optional)",
-        min_value=0, max_value=20000, value=0, step=50,
-        help="Draws a dashed line on the calories chart. Set to 0 to hide it.",
-    )
-    if st.button("Refresh data", use_container_width=True):
-        st.session_state.data_version += 1
-        st.rerun()
-    st.caption("Entries are stored in your Google Sheet.")
 
-# ----------------------------------------------------------------------------
-# Window + selected day
-# ----------------------------------------------------------------------------
+# =============================================================================
+# Date window + selection (single source of truth via the calendar URL param)
+# =============================================================================
 today = date.today()
 today_iso = today.isoformat()
-window = [today + timedelta(days=i) for i in range(30)]
-window_iso = {d.isoformat() for d in window}
+past_30_days = [today - timedelta(days=i) for i in range(29, -1, -1)]  # oldest -> today
+past_30_day_strings = [d.isoformat() for d in past_30_days]
 
 df_by_date = {row["date"]: row for _, row in df.iterrows()}
 
-# selection: URL query param -> session -> today
 qp_day = st.query_params.get("day")
-sel_iso = qp_day or st.session_state.get("selected_date", today_iso)
-try:
-    sel_date = date.fromisoformat(sel_iso)
-except ValueError:
-    sel_date, sel_iso = today, today_iso
+if qp_day in past_30_day_strings:
+    sel_iso = qp_day
+elif st.session_state.get("selected_date") in past_30_day_strings:
+    sel_iso = st.session_state.selected_date
+else:
+    sel_iso = today_iso
 st.session_state.selected_date = sel_iso
+sel_date = date.fromisoformat(sel_iso)
 existing = df_by_date.get(sel_iso)
 
-# ----------------------------------------------------------------------------
-# Hero
-# ----------------------------------------------------------------------------
+win30 = get_window_df(df, 30)
+logged_30 = len(win30)
+
+
+# =============================================================================
+# Header
+# =============================================================================
 st.markdown(
     f"""
     <div class="hero">
-      <div class="hero-emoji">🔥</div>
-      <div>
-        <div class="hero-title">30-Day Tracker</div>
-        <div class="hero-sub">Calories &amp; exercise · {today.strftime('%A, %B %d, %Y')}</div>
+      <div class="hero-left">
+        <div class="hero-mark">◐</div>
+        <div>
+          <div class="hero-title">Daily Wellness</div>
+          <div class="hero-sub">Habit &amp; nutrition check-in · {today.strftime('%A, %B %d')}</div>
+        </div>
+      </div>
+      <div class="hero-stat">
+        <div class="v">{logged_30}<span style="opacity:.7;font-size:1rem;font-weight:700">/30</span></div>
+        <div class="l">Days checked in</div>
       </div>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-# ----------------------------------------------------------------------------
-# KPI tiles (this 30-day window)
-# ----------------------------------------------------------------------------
-visible = df[df["date"].isin(window_iso)].copy()
-logged_days = len(visible)
-total_cal = int(visible["calories"].sum()) if not visible.empty else 0
-avg_cal = int(round(visible["calories"].mean())) if not visible.empty else 0
-total_min = int(visible["exercise_minutes"].sum()) if not visible.empty else 0
+meta_left, meta_right = st.columns([3, 1])
+with meta_left:
+    st.caption(f"Connected worksheet: `{active_worksheet_name}`")
+with meta_right:
+    st.link_button("Open Google Sheet", sheet_url, use_container_width=True)
 
-st.markdown(
-    f"""
-    <div class="kpi-grid">
-      <div class="kpi"><div class="kpi-icon">📆</div>
-        <div class="kpi-val">{logged_days}<span style="font-size:1rem;color:var(--muted);font-weight:700">/30</span></div>
-        <div class="kpi-label">Days logged</div></div>
-      <div class="kpi"><div class="kpi-icon">🔥</div>
-        <div class="kpi-val">{avg_cal:,}</div><div class="kpi-label">Avg calories</div></div>
-      <div class="kpi"><div class="kpi-icon">📊</div>
-        <div class="kpi-val">{total_cal:,}</div><div class="kpi-label">Total calories</div></div>
-      <div class="kpi"><div class="kpi-icon">🏃</div>
-        <div class="kpi-val">{total_min:,}</div><div class="kpi-label">Exercise min</div></div>
-    </div>
-    """,
-    unsafe_allow_html=True,
-)
 
-# ----------------------------------------------------------------------------
-# Calendar (the signature element) — click a day to select it
-# ----------------------------------------------------------------------------
+# =============================================================================
+# Calendar  (the one place to pick a day — replaces the old dropdown + buttons)
+# =============================================================================
 st.markdown(
     f"""
     <div class="sec-row">
-      <p class="sec-title">📅 Next 30 days</p>
+      <div class="eyebrow" style="margin:0">Your last 30 days</div>
       <a class="today-pill" href="?day={today_iso}" target="_self">↩︎ Jump to today</a>
     </div>
     """,
@@ -346,13 +528,13 @@ st.markdown(
 )
 
 dow_header = "".join(f"<span>{d}</span>" for d in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
+cells = ["<div></div>"] * past_30_days[0].weekday()  # align first day to its weekday column
 
-cells = ["<div></div>"] * window[0].weekday()  # align first day to its weekday column
-for d in window:
+for d in past_30_days:
     iso = d.isoformat()
-    rec = df_by_date.get(iso)
+    row = df_by_date.get(iso)
     cls = ["day"]
-    if rec is not None:
+    if row is not None:
         cls.append("is-logged")
     if iso == today_iso:
         cls.append("is-today")
@@ -364,190 +546,292 @@ for d in window:
         f'<div class="day-top"><span class="dow">{d.strftime("%a")}</span>'
         f'<span class="dom">{d.day}{mon_tag}</span></div>'
     )
-    if rec is not None:
+
+    if row is not None:
+        cal = safe_int(row.get("total_calories", 0))
+        pro = safe_float(row.get("total_protein", 0))
+        dots = "".join(
+            f'<span class="dot{" on" if parse_bool(row.get(c, False)) else ""}"></span>'
+            for c in BOOL_COLUMNS
+        )
+        checked = sum(parse_bool(row.get(c, False)) for c in BOOL_COLUMNS)
+        title = f"{d.strftime('%a, %b %d')} — {cal:,} cal · {pro:g}g protein · {checked}/4 checked"
         body = (
-            f'<div class="day-stats">'
-            f'<span class="chip cal">🔥 {int(rec.get("calories", 0))}</span>'
-            f'<span class="chip ex">🏃 {int(rec.get("exercise_minutes", 0))}</span></div>'
+            f'<div class="chips"><span class="chip cal">{cal:,} cal</span>'
+            f'<span class="chip pro">{pro:g}g</span></div>'
+            f'<div class="dots">{dots}</div>'
         )
     else:
+        title = f"{d.strftime('%a, %b %d')} — no entry"
         body = '<div class="day-empty">+</div>'
 
-    cells.append(f'<a class="{" ".join(cls)}" href="?day={iso}" target="_self">{top}{body}</a>')
+    cells.append(f'<a class="{" ".join(cls)}" href="?day={iso}" target="_self" title="{title}">{top}{body}</a>')
 
 st.markdown(
     f'<div class="cal-head">{dow_header}</div><div class="cal-grid">{"".join(cells)}</div>',
     unsafe_allow_html=True,
 )
-
 st.write("")
 
-# ----------------------------------------------------------------------------
-# Entry + day snapshot
-# ----------------------------------------------------------------------------
-left, right = st.columns([1.6, 1], gap="large")
 
-with left:
+# =============================================================================
+# Reload food-item widgets when the selected day changes  (logic unchanged)
+# =============================================================================
+if st.session_state.get("loaded_date") != sel_iso:
+    existing_items = parse_items(existing.get("items_json", "")) if existing is not None else []
+    load_items_into_state(existing_items)
+    st.session_state.loaded_date = sel_iso
+
+
+# =============================================================================
+# Entry editor
+# =============================================================================
+st.markdown('<div class="eyebrow">Check in for this day</div>', unsafe_allow_html=True)
+entry_col, totals_col = st.columns([2.2, 1], gap="large")
+
+with entry_col:
+    with st.container(border=True):
+        st.subheader(sel_date.strftime("%A, %B %d, %Y"))
+
+        b1, b2 = st.columns(2)
+        with b1:
+            night_ate = st.checkbox(
+                HABIT_LABELS["night_ate"],
+                value=parse_bool(existing.get("night_ate", False)) if existing is not None else False,
+                key=f"night_ate_{sel_iso}",
+            )
+            took_medicine = st.checkbox(
+                HABIT_LABELS["took_medicine"],
+                value=parse_bool(existing.get("took_medicine", False)) if existing is not None else False,
+                key=f"took_medicine_{sel_iso}",
+            )
+        with b2:
+            meditation_listen = st.checkbox(
+                HABIT_LABELS["meditation_listen"],
+                value=parse_bool(existing.get("meditation_listen", False)) if existing is not None else False,
+                key=f"meditation_listen_{sel_iso}",
+            )
+            no_food_4h_before_bed = st.checkbox(
+                HABIT_LABELS["no_food_4h_before_bed"],
+                value=parse_bool(existing.get("no_food_4h_before_bed", False)) if existing is not None else False,
+                key=f"no_food_4h_{sel_iso}",
+            )
+
+        st.markdown('<div class="eyebrow" style="margin-top:14px">Food log</div>', unsafe_allow_html=True)
+
+        head = st.columns([4.8, 1.55, 1.55, 0.55])
+        head[0].markdown('<div class="food-h">Item</div>', unsafe_allow_html=True)
+        head[1].markdown('<div class="food-h">Calories</div>', unsafe_allow_html=True)
+        head[2].markdown('<div class="food-h">Protein</div>', unsafe_allow_html=True)
+        head[3].markdown('<div class="food-h">&nbsp;</div>', unsafe_allow_html=True)
+
+        for idx, item in enumerate(st.session_state.food_items):
+            cols = st.columns([4.8, 1.55, 1.55, 0.55])
+            cols[0].text_input(
+                "Item", value=item.get("name", ""),
+                placeholder="Greek yogurt, Fairlife, chicken, etc.",
+                label_visibility="collapsed", key=f"food_name_{idx}",
+            )
+            cols[1].number_input(
+                "Calories", min_value=0, max_value=20000,
+                value=safe_int(item.get("calories", 0)), step=25,
+                label_visibility="collapsed", key=f"food_cal_{idx}",
+            )
+            cols[2].number_input(
+                "Protein", min_value=0.0, max_value=1000.0,
+                value=float(safe_float(item.get("protein", 0.0))), step=1.0, format="%.1f",
+                label_visibility="collapsed", key=f"food_protein_{idx}",
+            )
+            if cols[3].button("×", key=f"remove_food_{idx}", help="Remove item"):
+                current_items = get_items_from_widgets()
+                if idx < len(current_items):
+                    current_items.pop(idx)
+                load_items_into_state(current_items)
+                st.rerun()
+
+        add_col, _ = st.columns([1, 3])
+        with add_col:
+            if st.button("＋ Add item", key="add_food_btn", use_container_width=True):
+                current_items = get_items_from_widgets()
+                current_items.append({"name": "", "calories": 0, "protein": 0.0})
+                load_items_into_state(current_items)
+                st.rerun()
+
+        notes = st.text_area(
+            "Notes",
+            value=str(existing.get("notes", "")) if existing is not None else "",
+            placeholder="Optional: hunger, mood, sleep, dinner time — whatever you want to remember.",
+            height=90, key=f"notes_{sel_iso}",
+        )
+
+        save_col, delete_col, refresh_col = st.columns([1.4, 1, 1])
+        with save_col:
+            save_clicked = st.button("Save day", type="primary", use_container_width=True, key="save_day_btn")
+        with delete_col:
+            delete_clicked = st.button("Delete", disabled=existing is None, use_container_width=True, key="delete_day_btn")
+        with refresh_col:
+            refresh_clicked = st.button("Refresh", use_container_width=True, key="refresh_day_btn")
+
+with totals_col:
+    current_items = get_items_from_widgets()
+    day_calories = total_calories(current_items)
+    day_protein = total_protein(current_items)
+    habit_yes_count = sum([night_ate, took_medicine, meditation_listen, no_food_4h_before_bed])
+
     st.markdown(
-        f'<p class="sec-title">✍️ {sel_date.strftime("%A, %b %d")}</p>',
+        f'<div class="tcard cal"><div class="tnum">{day_calories:,}</div>'
+        f'<div class="tlab">calories logged</div></div>',
         unsafe_allow_html=True,
     )
-    with st.container(border=True):
-        with st.form("entry_form", border=False):
-            calories = st.number_input(
-                "Calories", min_value=0, max_value=20000,
-                value=int(existing["calories"]) if existing is not None else 0, step=50,
-            )
-            exercise = st.text_input(
-                "Activity",
-                value=str(existing["exercise"]) if existing is not None else "",
-                placeholder="walking, lifting, tennis, yoga…",
-            )
-            exercise_minutes = st.number_input(
-                "Exercise minutes", min_value=0, max_value=1000,
-                value=int(existing["exercise_minutes"]) if existing is not None else 0, step=5,
-            )
-            notes = st.text_area(
-                "Notes",
-                value=str(existing["notes"]) if existing is not None else "",
-                placeholder="Meals, mood, energy, how the workout felt…",
-            )
-            submitted = st.form_submit_button("Save entry", use_container_width=True, type="primary")
+    st.markdown(
+        f'<div class="tcard pro"><div class="tnum">{day_protein:g}g</div>'
+        f'<div class="tlab">protein logged</div></div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown(
+        f'<div class="tcard"><div class="tnum">{habit_yes_count}/4</div>'
+        f'<div class="tlab">boxes checked</div></div>',
+        unsafe_allow_html=True,
+    )
 
-        a1, a2 = st.columns(2)
-        delete_clicked = a1.button("Delete", use_container_width=True, disabled=existing is None)
-        refresh_clicked = a2.button("Refresh data", use_container_width=True)
-
-with right:
-    st.markdown('<p class="sec-title">🧾 Day snapshot</p>', unsafe_allow_html=True)
-    with st.container(border=True):
-        if existing is not None:
-            activity = html.escape(str(existing["exercise"]).strip()) or "—"
-            rows = [
-                ("🔥 Calories", f'{int(existing["calories"]):,}'),
-                ("🏃 Exercise", f'{int(existing["exercise_minutes"]):,} min'),
-                ("🏷️ Activity", activity),
-            ]
-            if target > 0:
-                rows.append(("🎯 Reference", f"{int(target):,}"))
-            snap = "".join(
-                f'<div class="snap-row"><span class="snap-k">{k}</span>'
-                f'<span class="snap-v">{v}</span></div>'
-                for k, v in rows
-            )
-            note_val = html.escape(str(existing["notes"]).strip())
-            if note_val:
-                snap += (
-                    '<div style="margin-top:12px;font-size:.83rem;color:var(--muted);line-height:1.5">'
-                    '<span style="font-weight:700;color:var(--ink)">Notes</span><br>'
-                    f"{note_val}</div>"
-                )
-            updated = html.escape(str(existing.get("updated_at", "")).strip())
-            if updated:
-                snap += (
-                    '<div style="font-size:.72rem;color:var(--muted);'
-                    f'margin-top:12px;text-align:right">Updated {updated}</div>'
-                )
-            st.markdown(snap, unsafe_allow_html=True)
-        else:
-            st.markdown(
-                '<div class="snap-empty">Nothing logged for this day yet.<br>'
-                "Fill in the form to add it. ✍️</div>",
-                unsafe_allow_html=True,
-            )
-
-# Handle actions
-if submitted:
-    action = upsert_entry(worksheet, sel_date, calories, exercise, exercise_minutes, notes)
-    st.session_state.data_version += 1
+# ---- handle editor actions ----
+if save_clicked:
+    items = get_items_from_widgets()
+    action = upsert_entry(
+        worksheet=worksheet, selected_date=sel_date,
+        night_ate=night_ate, took_medicine=took_medicine,
+        meditation_listen=meditation_listen, no_food_4h_before_bed=no_food_4h_before_bed,
+        items=items, notes=notes,
+    )
+    st.session_state.cache_buster = datetime.now().isoformat()
     st.toast("Saved" if action == "added" else "Updated", icon="✅")
     st.rerun()
 
 if delete_clicked:
     if delete_entry(worksheet, sel_date):
-        st.session_state.data_version += 1
-        st.toast("Deleted", icon="🗑️")
+        st.session_state.cache_buster = datetime.now().isoformat()
+        reset_day_widget_state(sel_iso)
+        st.session_state.loaded_date = None
+        st.toast("Entry deleted", icon="🗑️")
         st.rerun()
     else:
         st.warning("No entry found for this date.")
 
 if refresh_clicked:
-    st.session_state.data_version += 1
+    st.session_state.cache_buster = datetime.now().isoformat()
     st.rerun()
 
-# ----------------------------------------------------------------------------
-# Insights
-# ----------------------------------------------------------------------------
-st.write("")
-st.markdown('<p class="sec-title">📈 Insights</p>', unsafe_allow_html=True)
+
+# =============================================================================
+# Trends  (your own logged data — calories and protein split onto readable axes)
+# =============================================================================
+st.divider()
+st.markdown('<div class="eyebrow">Trends</div>', unsafe_allow_html=True)
 
 
-def bar_chart(data, ycol, ylabel, colors, reference=0):
+def trend_bars(data, ycol, ylabel, colors):
     grad = alt.Gradient(
         gradient="linear",
         stops=[alt.GradientStop(color=colors[0], offset=0), alt.GradientStop(color=colors[1], offset=1)],
         x1=1, x2=1, y1=0, y2=1,
     )
-    bars = (
+    return (
         alt.Chart(data)
-        .mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6, color=grad, size=22)
+        .mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6, color=grad, size=20)
         .encode(
-            x=alt.X("date:T", title=None, axis=alt.Axis(format="%b %d", labelAngle=-40)),
+            x=alt.X("date_dt:T", title=None, axis=alt.Axis(format="%b %d", labelAngle=-40)),
             y=alt.Y(f"{ycol}:Q", title=ylabel),
             tooltip=[
-                alt.Tooltip("date:T", title="Date", format="%b %d"),
+                alt.Tooltip("date_dt:T", title="Date", format="%b %d"),
                 alt.Tooltip(f"{ycol}:Q", title=ylabel),
             ],
         )
-        .properties(height=280)
-    )
-    chart = bars
-    if reference and reference > 0:
-        rule = (
-            alt.Chart(pd.DataFrame({"y": [reference]}))
-            .mark_rule(color="#9aa1ab", strokeDash=[6, 4], size=1.5)
-            .encode(y="y:Q")
+        .properties(height=270)
+        .configure_view(strokeWidth=0)
+        .configure_axis(
+            labelColor="#6B6880", titleColor="#6B6880",
+            domainColor="#E9E8F1", tickColor="#E9E8F1", gridColor="#F0EFF7",
         )
-        chart = bars + rule
-    return chart.configure_view(strokeWidth=0).configure_axis(
-        labelColor="#6b7280", titleColor="#6b7280",
-        domainColor="#e8eaed", tickColor="#e8eaed", gridColor="#eef1f4",
     )
 
 
-if visible.empty:
-    st.info("No entries logged in this 30-day window yet. Pick a day above and add your first one. 🙌")
-else:
-    chart_df = visible.copy()
-    chart_df["date"] = pd.to_datetime(chart_df["date"])
-    chart_df = chart_df.sort_values("date")
+def render_window(df, days):
+    win = get_window_df(df, days)
+    logged = len(win)
+    avg_cal = int(round(win["total_calories"].mean())) if logged else 0
+    avg_pro = round(win["total_protein"].mean(), 1) if logged else 0.0
+
+    m = st.columns(4)
+    m[0].metric("Days logged", f"{logged}/{days}")
+    m[1].metric("Avg calories", f"{avg_cal:,}")
+    m[2].metric("Avg protein", f"{avg_pro:g} g")
+    m[3].metric("Total calories", f"{int(win['total_calories'].sum()) if logged else 0:,}")
+
+    h = st.columns(4)
+    for col_box, key in zip(h, BOOL_COLUMNS):
+        pct = int(round(win[key].mean() * 100)) if logged else 0
+        col_box.metric(HABIT_LABELS[key].rstrip("?"), f"{pct}%")
+
+    if win.empty:
+        st.info(f"No entries in the last {days} days yet — pick a day above to check in.")
+        return
 
     c1, c2 = st.columns(2, gap="large")
     with c1:
         st.markdown("**Calories by day**")
-        st.altair_chart(bar_chart(chart_df, "calories", "Calories", ("#FF8E53", "#FF6B6B"), target),
+        st.altair_chart(trend_bars(win, "total_calories", "Calories", ("#FCD34D", "#F59E0B")),
                         use_container_width=True)
     with c2:
-        st.markdown("**Exercise minutes by day**")
-        st.altair_chart(bar_chart(chart_df, "exercise_minutes", "Minutes", ("#34d399", "#10b981")),
+        st.markdown("**Protein by day**")
+        st.altair_chart(trend_bars(win, "total_protein", "Protein (g)", ("#5EEAD4", "#14B8A6")),
                         use_container_width=True)
 
-    with st.expander("📋 View all entries"):
-        table = visible.sort_values("date").copy()
-        table["date"] = pd.to_datetime(table["date"])
+
+tab7, tab30 = st.tabs(["Last 7 days", "Last 30 days"])
+with tab7:
+    render_window(df, 7)
+with tab30:
+    render_window(df, 30)
+
+
+# =============================================================================
+# All entries
+# =============================================================================
+st.divider()
+with st.expander("All saved entries"):
+    if df.empty:
+        st.info("No entries yet.")
+    else:
+        display_df = df.copy()
+        display_df["date_dt"] = pd.to_datetime(display_df["date"], errors="coerce")
+        display_df = display_df.sort_values("date_dt", ascending=False)
+        display_df["items"] = display_df["items_json"].apply(
+            lambda value: ", ".join(item["name"] for item in parse_items(value) if item.get("name"))
+        )
+
         st.dataframe(
-            table,
+            display_df[
+                [
+                    "date_dt", "total_calories", "total_protein",
+                    "night_ate", "took_medicine", "meditation_listen", "no_food_4h_before_bed",
+                    "items", "notes", "updated_at",
+                ]
+            ],
             use_container_width=True,
             hide_index=True,
             column_config={
-                "date": st.column_config.DateColumn("Date", format="MMM D, YYYY"),
-                "calories": st.column_config.NumberColumn("Calories", format="%d"),
-                "exercise": st.column_config.TextColumn("Activity"),
-                "exercise_minutes": st.column_config.NumberColumn("Minutes", format="%d"),
+                "date_dt": st.column_config.DateColumn("Date", format="MMM D, YYYY"),
+                "total_calories": st.column_config.NumberColumn("Calories", format="%d"),
+                "total_protein": st.column_config.NumberColumn("Protein (g)", format="%.1f"),
+                "night_ate": st.column_config.CheckboxColumn("Night ate"),
+                "took_medicine": st.column_config.CheckboxColumn("Medicine"),
+                "meditation_listen": st.column_config.CheckboxColumn("Meditation"),
+                "no_food_4h_before_bed": st.column_config.CheckboxColumn("No food 4h"),
+                "items": st.column_config.TextColumn("Items", width="large"),
                 "notes": st.column_config.TextColumn("Notes", width="large"),
                 "updated_at": st.column_config.TextColumn("Updated"),
             },
         )
 
-st.markdown('<div class="foot">Built with Streamlit · data lives in your Google Sheet</div>',
+st.markdown('<div class="foot">Built with Streamlit · your entries live in your Google Sheet</div>',
             unsafe_allow_html=True)

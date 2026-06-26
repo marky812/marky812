@@ -10,7 +10,10 @@ st.set_page_config(page_title="30-Day Calories + Exercise Tracker", page_icon="ð
 st.title("ðŸ”¥ 30-Day Calories + Exercise Tracker")
 st.caption("Tracks calories and exercise using Google Sheets as the backend.")
 
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
+SCOPES = [
+    "https://www.googleapis.com/auth/spreadsheets",
+    "https://www.googleapis.com/auth/drive",
+]
 DEFAULT_SPREADSHEET_NAME = "Streamlit Calories Tracker"
 DEFAULT_WORKSHEET_NAME = "daily_log"
 HEADERS = ["date", "calories", "exercise", "exercise_minutes", "notes", "updated_at"]

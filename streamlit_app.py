@@ -1,5 +1,6 @@
 import json
 from datetime import date, datetime, timedelta
+from itertools import groupby
 
 import altair as alt
 import gspread
@@ -156,11 +157,8 @@ def get_or_create_worksheet():
     try:
         spreadsheet = gc.open(spreadsheet_name)
     except gspread.SpreadsheetNotFound:
+        # Created silently on first run; it belongs to the service account.
         spreadsheet = gc.create(spreadsheet_name)
-        st.warning(
-            f"Created a new spreadsheet named `{spreadsheet_name}`. "
-            "It belongs to the service account."
-        )
 
     try:
         worksheet = spreadsheet.worksheet(worksheet_name)
@@ -177,10 +175,8 @@ def get_or_create_worksheet():
         v2_name = f"{worksheet_name}_v2" if not worksheet_name.endswith("_v2") else worksheet_name
 
         if v2_name != worksheet_name:
-            st.warning(
-                f"`{worksheet_name}` has a different schema, so this app is using `{v2_name}` instead. "
-                "Your old sheet was not changed."
-            )
+            # Silently fall back to the v2 worksheet; the old sheet is left untouched.
+            # (The active worksheet name is surfaced once in the caption below the header.)
             try:
                 worksheet = spreadsheet.worksheet(v2_name)
             except gspread.WorksheetNotFound:
@@ -418,6 +414,17 @@ st.markdown(
     .day.is-selected .chip.cal, .day.is-selected .chip.pro{ background:rgba(255,255,255,.22); color:#fff; }
     .day.is-selected .dot{ border-color:rgba(255,255,255,.55); }
     .day.is-selected .dot.on{ background:#fff; border-color:#fff; }
+    .day.is-future .day-empty{ color:#e3e1f1; }
+
+    /* month grouping — each month is its own clearly labelled panel */
+    .month-card{ border:1px solid var(--line); border-radius:20px; padding:14px 18px 18px; background:var(--bg-soft); margin-bottom:16px; }
+    .month-head{ display:flex; align-items:baseline; gap:10px; margin-bottom:12px; padding-bottom:10px; border-bottom:1px solid var(--line); }
+    .month-name{ font-family:'Fraunces',Georgia,serif; font-size:1.42rem; font-weight:600; color:var(--ink); letter-spacing:-.01em; }
+    .month-name.cur{ background:linear-gradient(120deg,var(--tw-1),var(--tw-3)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
+    .month-year{ font-size:.92rem; font-weight:700; color:var(--muted); }
+    .month-now{ margin-left:auto; font-size:.66rem; font-weight:800; text-transform:uppercase; letter-spacing:.08em; color:#fff; background:linear-gradient(120deg,var(--tw-1),var(--tw-2)); padding:4px 11px; border-radius:999px; }
+    .month-card .cal-head{ margin-bottom:7px; }
+    .cell-blank{ visibility:hidden; }
 
     /* totals cards */
     .tcard{ border:1px solid var(--line); border-radius:18px; padding:18px; text-align:center; background:var(--bg-soft); margin-bottom:12px; }
@@ -465,15 +472,20 @@ with st.spinner("Connecting to Google Sheets..."):
 # =============================================================================
 today = date.today()
 today_iso = today.isoformat()
-past_30_days = [today - timedelta(days=i) for i in range(29, -1, -1)]  # oldest -> today
-past_30_day_strings = [d.isoformat() for d in past_30_days]
+
+# Calendar window: the last 30 days AND the next 30 days (grouped by month below).
+CAL_BACK_DAYS = 30
+CAL_FWD_DAYS = 30
+cal_start = today - timedelta(days=CAL_BACK_DAYS)
+window_days = [cal_start + timedelta(days=i) for i in range(CAL_BACK_DAYS + CAL_FWD_DAYS + 1)]
+window_day_strings = [d.isoformat() for d in window_days]
 
 df_by_date = {row["date"]: row for _, row in df.iterrows()}
 
 qp_day = st.query_params.get("day")
-if qp_day in past_30_day_strings:
+if qp_day in window_day_strings:
     sel_iso = qp_day
-elif st.session_state.get("selected_date") in past_30_day_strings:
+elif st.session_state.get("selected_date") in window_day_strings:
     sel_iso = st.session_state.selected_date
 else:
     sel_iso = today_iso
@@ -520,31 +532,33 @@ with meta_right:
 st.markdown(
     f"""
     <div class="sec-row">
-      <div class="eyebrow" style="margin:0">Your last 30 days</div>
+      <div class="eyebrow" style="margin:0">Last 30 &amp; next 30 days</div>
       <a class="today-pill" href="?day={today_iso}" target="_self">↩︎ Jump to today</a>
     </div>
     """,
     unsafe_allow_html=True,
 )
 
-dow_header = "".join(f"<span>{d}</span>" for d in ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"])
-cells = ["<div></div>"] * past_30_days[0].weekday()  # align first day to its weekday column
+WEEKDAYS = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+dow_header = "".join(f"<span>{d}</span>" for d in WEEKDAYS)
 
-for d in past_30_days:
+
+def render_day_cell(d):
     iso = d.isoformat()
     row = df_by_date.get(iso)
     cls = ["day"]
     if row is not None:
         cls.append("is-logged")
+    if d > today:
+        cls.append("is-future")
     if iso == today_iso:
         cls.append("is-today")
     if iso == sel_iso:
         cls.append("is-selected")
 
-    mon_tag = f'<span class="mon-tag">{d.strftime("%b")}</span>' if d.day == 1 else ""
     top = (
         f'<div class="day-top"><span class="dow">{d.strftime("%a")}</span>'
-        f'<span class="dom">{d.day}{mon_tag}</span></div>'
+        f'<span class="dom">{d.day}</span></div>'
     )
 
     if row is not None:
@@ -562,15 +576,35 @@ for d in past_30_days:
             f'<div class="dots">{dots}</div>'
         )
     else:
-        title = f"{d.strftime('%a, %b %d')} — no entry"
+        state = "upcoming" if d > today else "no entry"
+        title = f"{d.strftime('%a, %b %d')} — {state}"
         body = '<div class="day-empty">+</div>'
 
-    cells.append(f'<a class="{" ".join(cls)}" href="?day={iso}" target="_self" title="{title}">{top}{body}</a>')
+    return f'<a class="{" ".join(cls)}" href="?day={iso}" target="_self" title="{title}">{top}{body}</a>'
 
-st.markdown(
-    f'<div class="cal-head">{dow_header}</div><div class="cal-grid">{"".join(cells)}</div>',
-    unsafe_allow_html=True,
-)
+
+# Group the window into calendar months, each rendered as its own labelled panel.
+calendar_html = ""
+for (yr, mo), group in groupby(window_days, key=lambda d: (d.year, d.month)):
+    month_days = list(group)
+    is_current = yr == today.year and mo == today.month
+    now_pill = '<span class="month-now">This month</span>' if is_current else ""
+    header = (
+        '<div class="month-head">'
+        f'<span class="month-name{" cur" if is_current else ""}">{month_days[0].strftime("%B")}</span>'
+        f'<span class="month-year">{yr}</span>{now_pill}</div>'
+    )
+
+    cells = ['<div class="cell-blank"></div>'] * month_days[0].weekday()
+    cells.extend(render_day_cell(d) for d in month_days)
+
+    calendar_html += (
+        f'<div class="month-card">{header}'
+        f'<div class="cal-head">{dow_header}</div>'
+        f'<div class="cal-grid">{"".join(cells)}</div></div>'
+    )
+
+st.markdown(calendar_html, unsafe_allow_html=True)
 st.write("")
 
 

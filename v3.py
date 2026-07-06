@@ -2,7 +2,9 @@ import hashlib
 import hmac
 import json
 from datetime import date, datetime, timedelta
+from html import escape
 from itertools import groupby
+from uuid import uuid4
 
 import altair as alt
 import gspread
@@ -69,6 +71,11 @@ HABIT_LABELS = {
     "harambe": "Harambe",
     "walk": "Walk",
 }
+
+# Events calendar (bottom of the page). Events live in their OWN worksheet in
+# the same spreadsheet, so the daily wellness log above is never touched.
+DEFAULT_EVENTS_WORKSHEET_NAME = "events"
+EVENT_HEADERS = ["id", "date", "time", "title", "notes", "created_at"]
 
 
 # =============================================================================
@@ -375,6 +382,102 @@ def delete_entry(worksheet, selected_date):
     return True
 
 
+# =============================================================================
+# Events — stored in their own worksheet inside the same spreadsheet
+# =============================================================================
+def event_time_key(value) -> str:
+    """Sortable key for free-text times ('7:30pm', '19:00', ...).
+    Empty (all-day) events sort first; unparseable text sorts last."""
+    text = str(value).strip()
+    if not text:
+        return ""
+    try:
+        return pd.to_datetime(text).time().isoformat()
+    except Exception:
+        return "~" + text.lower()
+
+
+@st.cache_resource(show_spinner=False)
+def get_or_create_events_worksheet():
+    gc = get_gspread_client()
+
+    spreadsheet_name = st.secrets.get("spreadsheet_name", DEFAULT_SPREADSHEET_NAME)
+    events_name = st.secrets.get("events_worksheet_name", DEFAULT_EVENTS_WORKSHEET_NAME)
+
+    try:
+        spreadsheet = gc.open(spreadsheet_name)
+    except gspread.SpreadsheetNotFound:
+        spreadsheet = gc.create(spreadsheet_name)
+
+    try:
+        ws = spreadsheet.worksheet(events_name)
+    except gspread.WorksheetNotFound:
+        ws = spreadsheet.add_worksheet(title=events_name, rows=1000, cols=len(EVENT_HEADERS))
+        ws.append_row(EVENT_HEADERS)
+        return ws
+
+    headers = ws.row_values(1)
+    if not headers:
+        ws.append_row(EVENT_HEADERS)
+    elif headers != EVENT_HEADERS:
+        if _headers_are_additive(headers, EVENT_HEADERS):
+            if ws.col_count < len(EVENT_HEADERS):
+                ws.add_cols(len(EVENT_HEADERS) - ws.col_count)
+            ws.update(f"A1:{col_letter(len(EVENT_HEADERS))}1", [EVENT_HEADERS])
+        else:
+            # A sheet with this name exists but has an unknown schema — don't
+            # touch it. Use a fresh sibling worksheet instead.
+            safe_name = f"{ws.title}_v{int(datetime.now().timestamp())}"
+            new_ws = spreadsheet.add_worksheet(title=safe_name, rows=1000, cols=len(EVENT_HEADERS))
+            new_ws.append_row(EVENT_HEADERS)
+            return new_ws
+
+    return ws
+
+
+@st.cache_data(ttl=30, show_spinner=False)
+def load_events_cached(events_sheet_title: str, cache_buster: str):
+    ws = get_or_create_events_worksheet()
+    records = ws.get_all_records()
+
+    if not records:
+        return pd.DataFrame(columns=EVENT_HEADERS)
+
+    edf = pd.DataFrame(records)
+
+    for col in EVENT_HEADERS:
+        if col not in edf.columns:
+            edf[col] = ""
+
+    edf = edf[EVENT_HEADERS].copy()
+    for col in EVENT_HEADERS:
+        edf[col] = edf[col].astype(str)
+
+    return edf
+
+
+def add_event(ws, event_date, title, time_str, notes):
+    now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    row = [
+        uuid4().hex[:10],
+        event_date.isoformat(),
+        str(time_str).strip(),
+        str(title).strip(),
+        str(notes).strip(),
+        now,
+    ]
+    ws.append_row(row)
+
+
+def delete_event_by_id(ws, event_id) -> bool:
+    ids = ws.col_values(1)
+    for idx, value in enumerate(ids, start=1):
+        if idx > 1 and str(value) == str(event_id):
+            ws.delete_rows(idx)
+            return True
+    return False
+
+
 def clear_food_widget_state():
     for key in list(st.session_state.keys()):
         if key.startswith("food_name_") or key.startswith("food_cal_") or key.startswith("food_protein_"):
@@ -583,6 +686,20 @@ st.markdown(
     .tcard.hab{ background:#ffeafa; border-color:var(--mag-soft); }
     .tcard.hab .tnum{ color:var(--mag-deep); }
 
+    /* events calendar (bottom) */
+    .chip.ev{ background:#ffeafa; color:var(--mag-deep); border:1px solid var(--mag-soft);
+              display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+    .day.static{ cursor:default; }
+    .day.static:hover{ transform:none; box-shadow:none; border-color:var(--line); }
+    .day.static.is-logged:hover{ border-color:var(--mag-soft); }
+    .day.static.is-today:hover{ border-color:var(--cyn); }
+    .ev-mini{ display:none; }
+    .ev-when{ display:inline-block; font-size:.72rem; font-weight:800; color:var(--mag-deep);
+              background:var(--mag-soft); padding:4px 10px; border-radius:999px; white-space:nowrap; }
+    .ev-time{ font-size:.74rem; color:var(--muted); font-weight:600; margin-top:4px; }
+    .ev-title{ font-weight:700; color:var(--ink); }
+    .ev-notes{ color:var(--muted); font-size:.82rem; margin-top:1px; }
+
     /* metric tiles */
     div[data-testid="stMetric"]{ border:1.5px solid var(--line); border-radius:16px; padding:14px 16px; background:var(--card); }
 
@@ -597,6 +714,10 @@ st.markdown(
       .dot{ width:6px; height:6px; }
       .day .dom{ font-size:.9rem; }
       .pill{ min-width:58px; }
+      .ev-mini{ display:inline-flex; align-items:center; justify-content:center;
+                min-width:18px; height:18px; margin:auto auto 2px; padding:0 5px;
+                border-radius:999px; background:var(--mag); color:#fff;
+                font-size:.62rem; font-weight:800; }
     }
     </style>
     """,
@@ -615,6 +736,8 @@ require_password()
 # =============================================================================
 if "cache_buster" not in st.session_state:
     st.session_state.cache_buster = datetime.now().isoformat()
+if "ev_cache_buster" not in st.session_state:
+    st.session_state.ev_cache_buster = datetime.now().isoformat()
 
 with st.spinner("Connecting to Google Sheets..."):
     try:
@@ -976,6 +1099,7 @@ if delete_clicked:
 
 if refresh_clicked:
     st.session_state.cache_buster = datetime.now().isoformat()
+    st.session_state.ev_cache_buster = datetime.now().isoformat()
     st.rerun()
 
 
@@ -1098,6 +1222,168 @@ with st.expander("All saved entries"):
                 "updated_at": st.column_config.TextColumn("Updated"),
             },
         )
+
+# =============================================================================
+# Events calendar — one-off events (appointments, trips, birthdays) saved to
+# an `events` worksheet in the same Google Sheet.
+# =============================================================================
+def month_day_list(year: int, month: int):
+    first = date(year, month, 1)
+    if month == 12:
+        nxt = date(year + 1, 1, 1)
+    else:
+        nxt = date(year, month + 1, 1)
+    return [first + timedelta(days=i) for i in range((nxt - first).days)]
+
+
+def event_label(ev) -> str:
+    t = str(ev.get("time", "")).strip()
+    name = str(ev.get("title", "")).strip() or "(untitled)"
+    return f"{t} · {name}" if t else name
+
+
+def render_event_day_cell(d, day_events):
+    cls = ["day", "static"]
+    if day_events:
+        cls.append("is-logged")
+    if d == today:
+        cls.append("is-today")
+
+    top = (
+        f'<div class="day-top"><span class="dow">{d.strftime("%a")}</span>'
+        f'<span class="dom">{d.day}</span></div>'
+    )
+
+    if day_events:
+        chips = "".join(f'<span class="chip ev">{escape(event_label(ev))}</span>' for ev in day_events[:2])
+        if len(day_events) > 2:
+            chips += f'<span class="chip ev">+{len(day_events) - 2} more</span>'
+        tip = escape(f"{d.strftime('%a, %b %d')} — " + " · ".join(event_label(ev) for ev in day_events))
+        body = f'<div class="chips">{chips}</div><span class="ev-mini">{len(day_events)}</span>'
+    else:
+        tip = escape(d.strftime("%a, %b %d"))
+        body = '<div class="day-empty"></div>'
+
+    return f'<div class="{" ".join(cls)}" title="{tip}">{top}{body}</div>'
+
+
+def render_event_list_row(events_ws, ev, key_suffix: str):
+    d = ev["date_dt"].date()
+    delta_days = (d - today).days
+    if delta_days == 0:
+        when = "Today"
+    elif delta_days == 1:
+        when = "Tomorrow"
+    elif d.year == today.year:
+        when = d.strftime("%a, %b %d")
+    else:
+        when = d.strftime("%b %d, %Y")
+
+    time_str = str(ev.get("time", "")).strip()
+    title = str(ev.get("title", "")).strip() or "(untitled)"
+    notes = str(ev.get("notes", "")).strip()
+
+    c1, c2, c3 = st.columns([1.5, 4.3, 0.55])
+    time_html = f'<div class="ev-time">{escape(time_str)}</div>' if time_str else ""
+    c1.markdown(f'<span class="ev-when">{escape(when)}</span>{time_html}', unsafe_allow_html=True)
+    notes_html = f'<div class="ev-notes">{escape(notes)}</div>' if notes else ""
+    c2.markdown(f'<div class="ev-title">{escape(title)}</div>{notes_html}', unsafe_allow_html=True)
+
+    if c3.button("×", key=f"del_ev_{key_suffix}_{ev['id']}", help="Delete this event"):
+        if delete_event_by_id(events_ws, str(ev["id"])):
+            st.toast("Event deleted", icon="🗑️")
+        else:
+            st.toast("Couldn't find that event — try Refresh", icon="⚠️")
+        st.session_state.ev_cache_buster = datetime.now().isoformat()
+        st.rerun()
+
+
+st.divider()
+with st.expander("🗓️ Events calendar"):
+    events_ws = None
+    try:
+        events_ws = get_or_create_events_worksheet()
+        events_df = load_events_cached(events_ws.title, st.session_state.ev_cache_buster)
+    except Exception as e:
+        st.error(f"Couldn't load events: {e}")
+
+    if events_ws is not None:
+        st.caption(f"Saved to the `{events_ws.title}` tab of the same Google Sheet.")
+
+        # ---- add an event ----
+        with st.form("add_event_form", clear_on_submit=True):
+            fc = st.columns([1.35, 1.0, 2.65])
+            ev_date = fc[0].date_input("Date", value=today, format="MM/DD/YYYY")
+            ev_time = fc[1].text_input("Time", placeholder="7:30pm (optional)")
+            ev_title = fc[2].text_input("Event", placeholder="Dentist, dinner with Sam, flight…")
+            ev_notes = st.text_input("Notes", placeholder="Optional details")
+            add_ev_clicked = st.form_submit_button("＋ Add event", type="primary", use_container_width=True)
+
+        if add_ev_clicked:
+            if not str(ev_title).strip():
+                st.warning("Give the event a title first.")
+            else:
+                add_event(events_ws, ev_date, ev_title, ev_time, ev_notes)
+                st.session_state.ev_cache_buster = datetime.now().isoformat()
+                st.toast(f"Added: {str(ev_title).strip()}", icon="🗓️")
+                st.rerun()
+
+        # ---- prep events ----
+        evs = events_df.copy()
+        evs["date_dt"] = pd.to_datetime(evs["date"], errors="coerce")
+        evs = evs.dropna(subset=["date_dt"])
+        evs["time_key"] = evs["time"].astype(str).apply(event_time_key)
+        evs = evs.sort_values(["date_dt", "time_key", "title"])
+
+        events_by_day = {}
+        for _, ev in evs.iterrows():
+            events_by_day.setdefault(ev["date_dt"].date().isoformat(), []).append(ev)
+
+        ts_today = pd.Timestamp(today)
+        upcoming = evs[evs["date_dt"] >= ts_today]
+        past = evs[evs["date_dt"] < ts_today].sort_values(
+            ["date_dt", "time_key"], ascending=[False, False]
+        )
+
+        # ---- month grids: this month + next, plus any later month with events ----
+        base_months = {(today.year, today.month), (first_of_next.year, first_of_next.month)}
+        event_months = {(d.year, d.month) for d in upcoming["date_dt"].dt.date}
+        months_to_render = sorted(base_months | event_months)
+
+        ev_cal_html = ""
+        for yr, mo in months_to_render:
+            mdays = month_day_list(yr, mo)
+            is_cur = yr == today.year and mo == today.month
+            now_pill = '<span class="month-now">This month</span>' if is_cur else ""
+            header = (
+                '<div class="month-head">'
+                f'<span class="month-name{" cur" if is_cur else ""}">{mdays[0].strftime("%B")}</span>'
+                f'<span class="month-year">{yr}</span>{now_pill}</div>'
+            )
+            cells = ['<div class="cell-blank"></div>'] * mdays[0].weekday()
+            cells.extend(render_event_day_cell(d, events_by_day.get(d.isoformat(), [])) for d in mdays)
+            ev_cal_html += (
+                f'<div class="month-card">{header}'
+                f'<div class="cal-head">{dow_header}</div>'
+                f'<div class="cal-grid">{"".join(cells)}</div></div>'
+            )
+        st.markdown(ev_cal_html, unsafe_allow_html=True)
+
+        # ---- lists ----
+        up_tab, past_tab = st.tabs(["Upcoming", "Past"])
+        with up_tab:
+            if upcoming.empty:
+                st.info("No upcoming events yet — add one above.")
+            for i, (_, ev) in enumerate(upcoming.iterrows()):
+                render_event_list_row(events_ws, ev, f"up_{i}")
+        with past_tab:
+            if past.empty:
+                st.caption("No past events yet.")
+            elif len(past) > 30:
+                st.caption(f"Showing the 30 most recent of {len(past)} past events.")
+            for i, (_, ev) in enumerate(past.head(30).iterrows()):
+                render_event_list_row(events_ws, ev, f"past_{i}")
+
 
 st.markdown('<div class="foot">Built with Streamlit · your entries live in your Google Sheet</div>',
             unsafe_allow_html=True)

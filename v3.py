@@ -77,6 +77,9 @@ HABIT_LABELS = {
 DEFAULT_EVENTS_WORKSHEET_NAME = "events"
 EVENT_HEADERS = ["id", "date", "time", "title", "notes", "created_at"]
 
+# Trend windows the user can pick from in the Trends expander.
+TREND_WINDOW_OPTIONS = [7, 14, 30, 60, 90]
+
 
 # =============================================================================
 # Access gate
@@ -104,11 +107,11 @@ def require_password():
             <div style="text-align:center;margin-top:7vh">
               <div style="width:58px;height:58px;margin:0 auto;border-radius:19px;
                           display:flex;align-items:center;justify-content:center;font-size:26px;
-                          background:linear-gradient(135deg,#ff00c1,#6700a9);
-                          box-shadow:0 14px 28px -14px rgba(143,0,107,.65)">🔒</div>
+                          background:linear-gradient(135deg,#2563eb,#0f172a);
+                          box-shadow:0 14px 28px -14px rgba(15,23,42,.65)">🔒</div>
               <div style="font-family:'Rubik',sans-serif;font-size:1.5rem;font-weight:800;
-                          letter-spacing:-.02em;color:#221826;margin-top:12px">Daily Wellness</div>
-              <div style="color:#7c7382;font-size:.9rem;margin-top:3px">
+                          letter-spacing:-.02em;color:#16213a;margin-top:12px">Daily Wellness</div>
+              <div style="color:#64748b;font-size:.9rem;margin-top:3px">
                 Enter the password to continue.</div>
             </div>
             """,
@@ -525,8 +528,10 @@ def get_window_df(df, days: int):
 
 
 # =============================================================================
-# Styling — bold magenta / yellow / cyan identity, Rubik throughout.
-# Hierarchy comes from Rubik's weight range (400 body → 800/900 display).
+# Styling — steel blue / navy identity with amber + teal accents, Rubik
+# throughout. Hierarchy comes from Rubik's weight range (400 body → 800/900
+# display). Variable names kept from the old palette (--mag/--pur) so every
+# selector below works unchanged — only the color VALUES changed.
 # =============================================================================
 st.markdown(
     """
@@ -534,12 +539,12 @@ st.markdown(
     @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800;900&display=swap');
 
     :root{
-      --mag-soft:#ffb1ff; --mag:#ff00c1; --mag-deep:#8f006b;
-      --yel-soft:#fef5c2; --yel:#FEDA00; --yel-deep:#f3ac02; --yel-ink:#8a6d00;
-      --cyn-soft:#bcf0f1; --cyn:#67dedf; --cyn-deep:#1d8587;
-      --red:#fc0002; --pur:#6700a9; --grn:#66bb03;
-      --bg:#F9F8F8; --card:#FFFFFF;
-      --ink:#221826; --muted:#7c7382; --line:#ece7ee;
+      --mag-soft:#bfdbfe; --mag:#2563eb; --mag-deep:#1e40af;
+      --yel-soft:#fdf0cf; --yel:#f59e0b; --yel-deep:#d97706; --yel-ink:#92600a;
+      --cyn-soft:#c7f0ea; --cyn:#2dd4bf; --cyn-deep:#0f766e;
+      --red:#dc2626; --pur:#0f172a; --grn:#16a34a;
+      --bg:#f7f8fa; --card:#FFFFFF;
+      --ink:#16213a; --muted:#64748b; --line:#e2e8f0;
     }
 
     html, body, [class*="css"], .stMarkdown, button, input, textarea, select,
@@ -560,9 +565,9 @@ st.markdown(
     button[kind="primary"], button[kind="primaryFormSubmit"]{
       background-image:linear-gradient(135deg,var(--mag),var(--pur)) !important;
       border:0 !important; color:#fff !important;
-      box-shadow:0 10px 22px -12px rgba(143,0,107,.65) !important;
+      box-shadow:0 10px 22px -12px rgba(15,23,42,.65) !important;
     }
-    button[kind="primary"]:hover, button[kind="primaryFormSubmit"]:hover{ filter:brightness(1.08); }
+    button[kind="primary"]:hover, button[kind="primaryFormSubmit"]:hover{ filter:brightness(1.12); }
     .stTextInput input, .stNumberInput input, .stTextArea textarea{
       border-radius:12px !important; background:var(--card);
     }
@@ -573,26 +578,26 @@ st.markdown(
       background-image:linear-gradient(90deg,var(--mag),var(--pur));
     }
 
-    /* tabs */
+    /* tabs + radio */
     div[data-baseweb="tab-highlight"]{ background:var(--mag); }
     button[data-baseweb="tab"]{ font-weight:600; }
     button[data-baseweb="tab"][aria-selected="true"]{ color:var(--mag-deep); }
+    div[data-testid="stRadio"] label{ font-weight:600; }
 
     /* expander */
     div[data-testid="stExpander"] details{
       border:1.5px solid var(--line); border-radius:16px; background:var(--card);
     }
 
-    /* hero — magenta→purple base with soft yellow + cyan glows layered on top,
-       the CMYK-overlay idea rendered as light */
+    /* hero — steel blue→navy base with subtle amber + teal glows layered on top */
     .hero{
       display:flex; align-items:center; justify-content:space-between; gap:22px; flex-wrap:wrap;
       color:#fff; padding:26px 30px; border-radius:26px; margin-bottom:18px;
       background:
-        radial-gradient(560px 240px at 88% -30%, rgba(254,218,0,.30), transparent 60%),
-        radial-gradient(520px 240px at -8% 130%, rgba(103,222,223,.30), transparent 60%),
+        radial-gradient(560px 240px at 88% -30%, rgba(245,158,11,.22), transparent 60%),
+        radial-gradient(520px 240px at -8% 130%, rgba(45,212,191,.22), transparent 60%),
         linear-gradient(120deg,var(--mag) 0%,var(--mag-deep) 55%,var(--pur) 100%);
-      box-shadow:0 18px 44px -18px rgba(143,0,107,.55);
+      box-shadow:0 18px 44px -18px rgba(15,23,42,.55);
     }
     .hero-left{ display:flex; align-items:center; gap:16px; }
     .hero-mark{ font-size:30px; line-height:1; }
@@ -617,15 +622,15 @@ st.markdown(
       background:var(--card); border:1.5px solid var(--line); color:var(--ink);
       text-decoration:none; transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease;
     }
-    .pill:hover{ transform:translateY(-2px); box-shadow:0 10px 20px -12px rgba(34,24,38,.25); border-color:var(--mag-soft); }
+    .pill:hover{ transform:translateY(-2px); box-shadow:0 10px 20px -12px rgba(15,23,42,.25); border-color:var(--mag-soft); }
     .pill .p-dow{ font-size:.64rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
     .pill .p-dom{ font-size:1.15rem; font-weight:800; line-height:1; }
     .p-dot{ width:7px; height:7px; border-radius:50%; border:1.5px solid var(--line); background:transparent; }
     .p-dot.on{ background:var(--mag); border-color:var(--mag); }
-    .pill.is-today{ border-color:var(--cyn); box-shadow:0 0 0 2px rgba(103,222,223,.28); }
+    .pill.is-today{ border-color:var(--cyn); box-shadow:0 0 0 2px rgba(45,212,191,.28); }
     .pill.is-selected{
       background:linear-gradient(135deg,var(--mag),var(--pur)); border-color:transparent; color:#fff;
-      box-shadow:0 12px 24px -12px rgba(143,0,107,.6);
+      box-shadow:0 12px 24px -12px rgba(15,23,42,.6);
     }
     .pill.is-selected .p-dow{ color:rgba(255,255,255,.85); }
     .pill.is-selected .p-dot{ border-color:rgba(255,255,255,.55); }
@@ -640,11 +645,11 @@ st.markdown(
       background:var(--card); border:1.5px solid var(--line); color:var(--ink);
       text-decoration:none; transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease;
     }
-    .day:hover{ transform:translateY(-2px); box-shadow:0 10px 22px -12px rgba(34,24,38,.25); border-color:var(--mag-soft); }
+    .day:hover{ transform:translateY(-2px); box-shadow:0 10px 22px -12px rgba(15,23,42,.25); border-color:var(--mag-soft); }
     .day-top{ display:flex; align-items:baseline; justify-content:space-between; }
     .day .dow{ font-size:.7rem; font-weight:700; color:var(--muted); }
     .day .dom{ font-size:1.05rem; font-weight:800; }
-    .day-empty{ color:#e6dcea; font-weight:700; font-size:1.05rem; margin:auto; }
+    .day-empty{ color:#dbe3f0; font-weight:700; font-size:1.05rem; margin:auto; }
     .chips{ display:flex; flex-wrap:wrap; gap:4px; }
     .chip{ font-size:.64rem; font-weight:700; padding:2px 6px; border-radius:999px; white-space:nowrap; }
     .chip.cal{ background:var(--yel-soft); color:var(--yel-ink); }
@@ -653,17 +658,17 @@ st.markdown(
     .dot{ width:8px; height:8px; border-radius:50%; background:transparent; border:1.5px solid var(--line); }
     .dot.on{ background:var(--mag); border-color:var(--mag); }
 
-    .day.is-logged{ border-color:var(--mag-soft); background:linear-gradient(180deg,#fff,#fff6fd); }
-    .day.is-today{ border-color:var(--cyn); box-shadow:0 0 0 2px rgba(103,222,223,.28); }
+    .day.is-logged{ border-color:var(--mag-soft); background:linear-gradient(180deg,#fff,#f4f8ff); }
+    .day.is-today{ border-color:var(--cyn); box-shadow:0 0 0 2px rgba(45,212,191,.28); }
     .day.is-selected{
       background:linear-gradient(140deg,var(--mag),var(--pur)); border-color:transparent; color:#fff;
-      box-shadow:0 12px 24px -12px rgba(143,0,107,.62);
+      box-shadow:0 12px 24px -12px rgba(15,23,42,.62);
     }
     .day.is-selected .dow, .day.is-selected .dom, .day.is-selected .day-empty{ color:#fff; }
     .day.is-selected .chip.cal, .day.is-selected .chip.pro{ background:rgba(255,255,255,.22); color:#fff; }
     .day.is-selected .dot{ border-color:rgba(255,255,255,.55); }
     .day.is-selected .dot.on{ background:#fff; border-color:#fff; }
-    .day.is-future .day-empty{ color:#efe8f2; }
+    .day.is-future .day-empty{ color:#e9eef6; }
 
     /* month grouping — each month is its own clearly labelled panel */
     .month-card{ border:1.5px solid var(--line); border-radius:20px; padding:14px 18px 18px; background:var(--bg); margin-bottom:16px; }
@@ -675,19 +680,19 @@ st.markdown(
     .month-card .cal-head{ margin-bottom:7px; }
     .cell-blank{ visibility:hidden; }
 
-    /* totals cards — one per brand color: yellow=calories, cyan=protein, magenta=habits */
+    /* totals cards — one per accent color: amber=calories, teal=protein, blue=habits */
     .tcard{ border:1.5px solid var(--line); border-radius:20px; padding:18px; text-align:center; background:var(--card); margin-bottom:12px; }
     .tcard .tnum{ font-size:2rem; font-weight:800; letter-spacing:-.03em; line-height:1; color:var(--ink); }
     .tcard .tlab{ color:var(--muted); font-size:.82rem; margin-top:6px; font-weight:600; }
-    .tcard.cal{ background:var(--yel-soft); border-color:#f3e6a4; }
+    .tcard.cal{ background:var(--yel-soft); border-color:#f0dda6; }
     .tcard.cal .tnum{ color:var(--yel-ink); }
-    .tcard.pro{ background:var(--cyn-soft); border-color:#9fe2e3; }
+    .tcard.pro{ background:var(--cyn-soft); border-color:#9fdfd5; }
     .tcard.pro .tnum{ color:var(--cyn-deep); }
-    .tcard.hab{ background:#ffeafa; border-color:var(--mag-soft); }
+    .tcard.hab{ background:#e8efff; border-color:var(--mag-soft); }
     .tcard.hab .tnum{ color:var(--mag-deep); }
 
     /* events calendar (bottom) */
-    .chip.ev{ background:#ffeafa; color:var(--mag-deep); border:1px solid var(--mag-soft);
+    .chip.ev{ background:#e8efff; color:var(--mag-deep); border:1px solid var(--mag-soft);
               display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
     .day.static{ cursor:default; }
     .day.static:hover{ transform:none; box-shadow:none; border-color:var(--line); }
@@ -1104,12 +1109,9 @@ if refresh_clicked:
 
 
 # =============================================================================
-# Trends — calories in yellow, protein in cyan, matching the day chips
+# Trends — tucked into an expander, with a selectable time window instead of
+# the old fixed 7-day / 30-day tabs. Calories in amber, protein in teal.
 # =============================================================================
-st.divider()
-st.markdown('<div class="eyebrow">Trends</div>', unsafe_allow_html=True)
-
-
 def trend_bars(data, ycol, ylabel, colors):
     grad = alt.Gradient(
         gradient="linear",
@@ -1130,8 +1132,8 @@ def trend_bars(data, ycol, ylabel, colors):
         .properties(height=270)
         .configure_view(strokeWidth=0)
         .configure_axis(
-            labelColor="#7c7382", titleColor="#7c7382",
-            domainColor="#ece7ee", tickColor="#ece7ee", gridColor="#f3eff5",
+            labelColor="#64748b", titleColor="#64748b",
+            domainColor="#e2e8f0", tickColor="#e2e8f0", gridColor="#eef2f7",
             labelFont="Rubik", titleFont="Rubik",
         )
     )
@@ -1164,19 +1166,26 @@ def render_window(df, days):
     c1, c2 = st.columns(2, gap="large")
     with c1:
         st.markdown("**Calories by day**")
-        st.altair_chart(trend_bars(win, "total_calories", "Calories", ("#FEDA00", "#f3ac02")),
+        st.altair_chart(trend_bars(win, "total_calories", "Calories", ("#f59e0b", "#d97706")),
                         use_container_width=True)
     with c2:
         st.markdown("**Protein by day**")
-        st.altair_chart(trend_bars(win, "total_protein", "Protein (g)", ("#67dedf", "#1d8587")),
+        st.altair_chart(trend_bars(win, "total_protein", "Protein (g)", ("#2dd4bf", "#0f766e")),
                         use_container_width=True)
 
 
-tab7, tab30 = st.tabs(["Last 7 days", "Last 30 days"])
-with tab7:
-    render_window(df, 7)
-with tab30:
-    render_window(df, 30)
+st.divider()
+with st.expander("📊 Trends"):
+    trend_days = st.radio(
+        "Time window",
+        TREND_WINDOW_OPTIONS,
+        index=0,
+        format_func=lambda d: f"Last {d} days",
+        horizontal=True,
+        label_visibility="collapsed",
+        key="trend_window",
+    )
+    render_window(df, trend_days)
 
 
 # =============================================================================

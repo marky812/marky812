@@ -5,9 +5,17 @@ A two-person daily diet accountability tracker.
 
 - Left panel  = Abhi   (indigo)
 - Right panel = Shamal (copper)
-- Each person logs calories, protein, fiber + a notes/progress entry per day.
-- Data is saved to NEW worksheet tabs ("abhi_log", "shamal_log") inside the
-  SAME Google Sheet your old tracker uses — nothing existing is touched.
+- Each person logs line items (name, calories, protein, carbs, fat, fiber)
+  plus a notes/progress entry per day. Day totals are computed automatically.
+- Every saved day is visible in-app in the "Log" section — no need to open
+  the Google Sheet (the sheet stays available as backup storage).
+- Data is saved to worksheet tabs ("abhi_log", "shamal_log") inside the SAME
+  Google Sheet your old tracker uses — nothing existing is touched. If a tab
+  already has entries from an earlier version of this app, the new columns
+  are appended on the right so every old row is preserved.
+
+No config file needed — the light theme and all colors are enforced inside
+this script, so everything stays readable even on phones in dark mode.
 
 Deploy (Streamlit Community Cloud):
 1. Put this file in a GitHub repo as streamlit_app.py
@@ -25,6 +33,7 @@ import hashlib
 import hmac
 import json
 from datetime import date, datetime, timedelta
+from html import escape
 
 import altair as alt
 import gspread
@@ -49,7 +58,16 @@ SCOPES = [
 # Same spreadsheet as your old tracker — new tabs get created inside it.
 DEFAULT_SPREADSHEET_NAME = "Streamlit Calories Tracker"
 
-HEADERS = ["date", "calories", "protein", "fiber", "notes", "updated_at"]
+# Column order looks odd on purpose: the first six columns match the earlier
+# version of this app exactly, and the new ones (carbs, fat, items_json) are
+# APPENDED — so the additive migration in get_person_worksheet() upgrades an
+# existing tab in place without losing a single saved row.
+HEADERS = [
+    "date", "calories", "protein", "fiber", "notes", "updated_at",
+    "carbs", "fat", "items_json",
+]
+
+MACROS = ["calories", "protein", "carbs", "fat", "fiber"]
 
 PEOPLE = {
     "abhi": {
@@ -69,6 +87,9 @@ PEOPLE = {
 }
 
 TREND_WINDOW_OPTIONS = [7, 14, 30, 60, 90]
+
+# Column ratios shared by the item header row and every item row.
+ITEM_COLS = [3.0, 1.15, 1.1, 1.15, 1.05, 1.1, 0.55]
 
 # =============================================================================
 # Access gate — same hash as the old app, so the same password keeps working.
@@ -136,7 +157,7 @@ def safe_float(value, default=0.0) -> float:
 
 
 def col_letter(n: int) -> str:
-    """1-indexed column number -> spreadsheet column letters (e.g. 6 -> 'F')."""
+    """1-indexed column number -> spreadsheet column letters (e.g. 9 -> 'I')."""
     letters = ""
     while n > 0:
         n, remainder = divmod(n - 1, 26)
@@ -174,6 +195,89 @@ def get_window_df(df, days: int):
 
 
 # =============================================================================
+# Food items — each day is a list of line items with full macros
+# =============================================================================
+def empty_item():
+    return {"name": "", "calories": 0, "protein": 0.0, "carbs": 0.0, "fat": 0.0, "fiber": 0.0}
+
+
+def clean_items(items):
+    cleaned = []
+    for item in items or []:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name", "")).strip()
+        cal = max(0, safe_int(item.get("calories", 0)))
+        pro = round(max(0.0, safe_float(item.get("protein", 0.0))), 1)
+        carb = round(max(0.0, safe_float(item.get("carbs", 0.0))), 1)
+        fat = round(max(0.0, safe_float(item.get("fat", 0.0))), 1)
+        fib = round(max(0.0, safe_float(item.get("fiber", 0.0))), 1)
+        if name or cal or pro or carb or fat or fib:
+            cleaned.append(
+                {"name": name, "calories": cal, "protein": pro, "carbs": carb, "fat": fat, "fiber": fib}
+            )
+    return cleaned
+
+
+def parse_items(value):
+    value_str = str(value or "").strip()
+    if not value_str:
+        return []
+    try:
+        raw = json.loads(value_str)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(raw, list):
+        return []
+    return clean_items(raw)
+
+
+def totals_from(items):
+    t = {"calories": 0, "protein": 0.0, "carbs": 0.0, "fat": 0.0, "fiber": 0.0}
+    for item in items:
+        t["calories"] += safe_int(item.get("calories", 0))
+        t["protein"] += safe_float(item.get("protein", 0.0))
+        t["carbs"] += safe_float(item.get("carbs", 0.0))
+        t["fat"] += safe_float(item.get("fat", 0.0))
+        t["fiber"] += safe_float(item.get("fiber", 0.0))
+    for k in ("protein", "carbs", "fat", "fiber"):
+        t[k] = round(t[k], 1)
+    return t
+
+
+# ---- per-person widget state for the item rows ----
+def clear_item_widget_state(person_key):
+    prefixes = tuple(f"{p}_{person_key}_" for p in ("fname", "fcal", "fpro", "fcarb", "ffat", "ffib"))
+    for k in list(st.session_state.keys()):
+        if k.startswith(prefixes):
+            del st.session_state[k]
+
+
+def load_items_into_state(person_key, items):
+    clear_item_widget_state(person_key)
+    st.session_state[f"food_items_{person_key}"] = list(items) if items else [empty_item()]
+
+
+def raw_items_from_widgets(person_key):
+    """Read the item rows exactly as typed (no cleaning), index-aligned with
+    the widgets — used for add/remove so row indices never shift."""
+    items = []
+    count = len(st.session_state.get(f"food_items_{person_key}", []))
+    for i in range(count):
+        items.append(
+            {
+                "name": st.session_state.get(f"fname_{person_key}_{i}", ""),
+                "calories": st.session_state.get(f"fcal_{person_key}_{i}", 0),
+                "protein": st.session_state.get(f"fpro_{person_key}_{i}", 0.0),
+                "carbs": st.session_state.get(f"fcarb_{person_key}_{i}", 0.0),
+                "fat": st.session_state.get(f"ffat_{person_key}_{i}", 0.0),
+                "fiber": st.session_state.get(f"ffib_{person_key}_{i}", 0.0),
+            }
+        )
+    return items
+
+
+# =============================================================================
 # Google Sheets
 # =============================================================================
 @st.cache_resource(show_spinner=False)
@@ -201,8 +305,8 @@ def get_spreadsheet():
 @st.cache_resource(show_spinner=False)
 def get_person_worksheet(person_key: str):
     """Get (or create) this person's tab in the shared spreadsheet.
-    Existing tabs with other schemas are never cleared — same safety rules
-    as the old tracker."""
+    Additive schema changes upgrade the tab in place (rows preserved);
+    unknown schemas are never cleared — a sibling tab is used instead."""
     spreadsheet = get_spreadsheet()
     cfg = PEOPLE[person_key]
     ws_name = st.secrets.get(cfg["ws_secret"], cfg["ws_default"])
@@ -249,9 +353,10 @@ def load_person_df(person_key: str, ws_title: str, cache_buster: str):
     df = df[HEADERS].copy()
     df["date"] = df["date"].astype(str)
     df["calories"] = pd.to_numeric(df["calories"], errors="coerce").fillna(0).astype(int)
-    df["protein"] = pd.to_numeric(df["protein"], errors="coerce").fillna(0.0).astype(float)
-    df["fiber"] = pd.to_numeric(df["fiber"], errors="coerce").fillna(0.0).astype(float)
+    for col in ("protein", "carbs", "fat", "fiber"):
+        df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0).astype(float)
     df["notes"] = df["notes"].astype(str)
+    df["items_json"] = df["items_json"].astype(str)
     df["updated_at"] = df["updated_at"].astype(str)
     return df
 
@@ -264,18 +369,24 @@ def find_row_number_by_date(worksheet, selected_date_str):
     return None
 
 
-def upsert_entry(worksheet, selected_date, calories, protein, fiber, notes):
+def upsert_entry(worksheet, selected_date, items, notes):
     selected_date_str = selected_date.isoformat()
+    cleaned = clean_items(items)
+    t = totals_from(cleaned)
     now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
-    row = [
-        selected_date_str,
-        max(0, safe_int(calories)),
-        round(max(0.0, safe_float(protein)), 1),
-        round(max(0.0, safe_float(fiber)), 1),
-        str(notes).strip(),
-        now,
-    ]
+    record = {
+        "date": selected_date_str,
+        "calories": t["calories"],
+        "protein": t["protein"],
+        "fiber": t["fiber"],
+        "notes": str(notes).strip(),
+        "updated_at": now,
+        "carbs": t["carbs"],
+        "fat": t["fat"],
+        "items_json": json.dumps(cleaned),
+    }
+    row = [record.get(col, "") for col in HEADERS]
 
     row_number = find_row_number_by_date(worksheet, selected_date_str)
     end = col_letter(len(HEADERS))
@@ -300,7 +411,10 @@ def delete_entry(worksheet, selected_date):
 # =============================================================================
 # Styling — quiet, editorial, monochrome. Instrument Sans for text, IBM Plex
 # Mono for every number, date and label. Color appears ONLY as the two-person
-# code: indigo = Abhi, copper = Shamal — as 6px dots, 2px rules and chart ink.
+# code: indigo = Abhi, copper = Shamal — as dots, top rules and chart ink.
+# Every widget surface (inputs, buttons, radios, calendar, alerts, toasts) is
+# pinned to light ink-on-white in CSS, so no theme config file is needed and
+# nothing can render white-on-white or dark-on-dark in device dark mode.
 # =============================================================================
 st.markdown(
     """
@@ -310,19 +424,20 @@ st.markdown(
     :root{
       --a:#4f46e5;            /* Abhi — indigo  */
       --b:#c2410c;            /* Shamal — copper */
-      --ink:#18181d; --muted:#73737c; --faint:#a6a6ae;
-      --line:#e7e7ea; --line-2:#d9d9df;
+      --ink:#18181d; --muted:#5f5f68; --faint:#8b8b94;
+      --line:#e7e7ea; --line-2:#d6d6dc;
       --bg:#fafafa; --card:#ffffff;
       --mono:'IBM Plex Mono',ui-monospace,'SF Mono',Menlo,monospace;
     }
+    html{ color-scheme:light; }
 
-    html, body, [class*="css"], .stMarkdown, button, input, textarea, select,
+    html, body, [class*="css"], .stMarkdown, .stMarkdown p, button, input, textarea, select,
     h1, h2, h3, h4, h5, h6{
       font-family:'Instrument Sans',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif !important;
       color:var(--ink);
     }
     .mono{ font-family:var(--mono) !important; }
-    [data-testid="stAppViewContainer"]{ background:var(--bg); }
+    [data-testid="stApp"], [data-testid="stAppViewContainer"]{ background:var(--bg) !important; }
     header[data-testid="stHeader"]{ background:transparent; }
     .block-container{ padding-top:1.4rem; padding-bottom:3.5rem; max-width:1120px; }
     #MainMenu, footer{ visibility:hidden; }
@@ -330,23 +445,28 @@ st.markdown(
 
     /* widget labels + captions — small mono meta text */
     div[data-testid="stWidgetLabel"] p{
-      font-family:var(--mono) !important; font-size:.63rem !important; font-weight:500 !important;
-      text-transform:uppercase; letter-spacing:.1em; color:var(--muted) !important;
+      font-family:var(--mono) !important; font-size:.68rem !important; font-weight:500 !important;
+      text-transform:uppercase; letter-spacing:.09em; color:var(--muted) !important;
     }
     div[data-testid="stCaptionContainer"], div[data-testid="stCaptionContainer"] p{
-      font-family:var(--mono) !important; font-size:.66rem !important; color:var(--faint) !important;
+      font-family:var(--mono) !important; font-size:.7rem !important; color:var(--muted) !important;
     }
     div[data-testid="stCaptionContainer"] code{
-      font-family:var(--mono) !important; font-size:.66rem; color:var(--muted);
+      font-family:var(--mono) !important; font-size:.7rem; color:var(--ink);
       background:transparent; padding:0;
     }
 
-    /* buttons — flat, hairline, ink primary */
+    /* buttons — flat, hairline, ink primary; label color pinned so it can
+       never disappear against the button face */
     [data-testid^="stBaseButton"], [data-testid^="stBaseLinkButton"]{
       border-radius:10px !important; border:1px solid var(--line-2) !important;
       background:var(--card) !important; color:var(--ink) !important;
       min-height:40px; font-weight:500 !important; font-size:.88rem !important;
       box-shadow:none !important; transition:border-color .12s ease, background .12s ease;
+    }
+    [data-testid^="stBaseButton"] p, [data-testid^="stBaseButton"] span,
+    [data-testid^="stBaseLinkButton"] p, [data-testid^="stBaseLinkButton"] span{
+      color:inherit !important;
     }
     [data-testid^="stBaseButton"]:hover, [data-testid^="stBaseLinkButton"]:hover{
       border-color:var(--ink) !important;
@@ -355,38 +475,87 @@ st.markdown(
     [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"]{
       background:var(--ink) !important; color:#fff !important; border:1px solid var(--ink) !important;
     }
+    button[kind="primary"] p, button[kind="primaryFormSubmit"] p,
+    [data-testid="stBaseButton-primary"] p, [data-testid="stBaseButton-primaryFormSubmit"] p{
+      color:#fff !important;
+    }
     button[kind="primary"]:hover, button[kind="primaryFormSubmit"]:hover,
     [data-testid="stBaseButton-primary"]:hover, [data-testid="stBaseButton-primaryFormSubmit"]:hover{
-      background:#303039 !important; border-color:#303039 !important;
+      background:#32323b !important; border-color:#32323b !important;
     }
-    [data-testid^="stBaseButton"]:disabled{ opacity:.4; }
+    [data-testid^="stBaseButton"]:disabled{ opacity:.45; }
 
-    /* inputs */
-    .stTextInput input, .stTextArea textarea, .stDateInput input{
-      border-radius:10px !important; background:var(--card);
+    /* inputs — face, text, caret, placeholder and focus all pinned readable */
+    div[data-baseweb="input"], div[data-baseweb="textarea"]{
+      background:var(--card) !important; border-color:var(--line-2) !important;
     }
-    .stNumberInput input{
-      border-radius:10px !important; background:var(--card);
-      font-family:var(--mono) !important; font-weight:500;
+    div[data-baseweb="input"]:focus-within, div[data-baseweb="textarea"]:focus-within{
+      border-color:var(--ink) !important; box-shadow:none !important;
+    }
+    .stTextInput input, .stTextArea textarea, .stDateInput input, .stNumberInput input{
+      border-radius:10px !important; background:var(--card) !important;
+      color:var(--ink) !important; -webkit-text-fill-color:var(--ink);
+      caret-color:var(--ink);
+    }
+    .stNumberInput input{ font-family:var(--mono) !important; font-weight:500; font-size:.86rem !important; }
+    .stTextInput input::placeholder, .stTextArea textarea::placeholder,
+    .stNumberInput input::placeholder{ color:var(--faint) !important; opacity:1; }
+    /* hide number steppers — typing is faster, and item rows stay compact */
+    [data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"]{ display:none !important; }
+
+    /* radio — replace the default red accent with ink */
+    div[data-testid="stRadio"] label p{ font-size:.84rem; font-weight:500; color:var(--ink) !important; }
+    div[data-testid="stRadio"] [data-baseweb="radio"] > div:first-child{
+      background:var(--card) !important; border-color:var(--line-2) !important;
+    }
+    div[data-testid="stRadio"] [data-baseweb="radio"] > div:first-child > div{
+      background:var(--ink) !important;
+    }
+    div[data-testid="stRadio"] [data-baseweb="radio"]:hover > div:first-child{
+      border-color:var(--ink) !important;
     }
 
-    /* expander / tabs / radio */
+    /* popover, toast, alerts, date-picker calendar — light surfaces always */
+    div[data-testid="stPopoverBody"]{
+      background:var(--card) !important; border:1px solid var(--line);
+      border-radius:14px;
+    }
+    div[data-testid="stPopoverBody"] *{ color:var(--ink); }
+    div[data-testid="stToast"]{
+      background:var(--card) !important; color:var(--ink) !important;
+      border:1px solid var(--line-2); border-radius:12px;
+    }
+    div[data-testid="stToast"] p, div[data-testid="stToast"] div{ color:var(--ink) !important; }
+    div[data-testid="stAlert"]{
+      background:#f3f3f5 !important; border:1px solid var(--line-2) !important;
+      border-radius:12px !important;
+    }
+    div[data-testid="stAlert"] *{ color:var(--ink) !important; }
+    div[data-baseweb="calendar"], div[data-baseweb="datepicker"]{ background:var(--card) !important; }
+    div[data-baseweb="calendar"] div, div[data-baseweb="calendar"] span,
+    div[data-baseweb="calendar"] button{ color:var(--ink); }
+    div[data-baseweb="menu"], ul[role="listbox"]{ background:var(--card) !important; }
+    div[data-baseweb="menu"] *, ul[role="listbox"] *{ color:var(--ink) !important; }
+
+    /* expander / tabs */
     div[data-testid="stExpander"] details{
       border:1px solid var(--line); border-radius:14px; background:var(--card);
     }
-    div[data-testid="stExpander"] summary{ font-weight:600; font-size:.92rem; }
+    div[data-testid="stExpander"] summary, div[data-testid="stExpander"] summary p{
+      font-weight:600; font-size:.92rem; color:var(--ink) !important;
+    }
     div[data-baseweb="tab-highlight"]{ background:var(--ink); }
-    button[data-baseweb="tab"]{ font-weight:500; }
-    div[data-testid="stRadio"] label p{ font-size:.84rem; font-weight:500; }
+    button[data-baseweb="tab"] p{ font-weight:500; color:var(--muted) !important; }
+    button[data-baseweb="tab"][aria-selected="true"] p{ color:var(--ink) !important; }
 
     /* person dots — the only place color is allowed to live */
     .dot{
-      display:inline-block; width:6px; height:6px; border-radius:50%;
-      background:var(--faint); vertical-align:1px; margin-right:7px;
+      display:inline-block; width:8px; height:8px; border-radius:50%;
+      background:var(--faint); vertical-align:0; margin-right:7px;
     }
     .dot.a{ background:var(--a); }
     .dot.b{ background:var(--b); }
-    .dot.off{ background:transparent; box-shadow:inset 0 0 0 1px var(--faint); }
+    .dot.off{ background:transparent; box-shadow:inset 0 0 0 1.5px var(--faint); }
 
     /* masthead — wordmark left, streak counters right, single ink rule below */
     .mast{
@@ -394,7 +563,7 @@ st.markdown(
       padding:4px 0 16px; border-bottom:1px solid var(--ink); margin-bottom:14px;
     }
     .mast-kicker{
-      font-family:var(--mono); font-size:.6rem; font-weight:500; letter-spacing:.2em;
+      font-family:var(--mono); font-size:.64rem; font-weight:500; letter-spacing:.18em;
       text-transform:uppercase; color:var(--muted);
     }
     .mast-title{ font-size:1.72rem; font-weight:700; letter-spacing:-.035em; line-height:1.05; margin-top:5px; }
@@ -402,25 +571,25 @@ st.markdown(
     .mstat{ text-align:right; }
     .ms-v{ font-family:var(--mono); font-size:1.3rem; font-weight:600; letter-spacing:-.01em; line-height:1; }
     .ms-l{
-      font-family:var(--mono); font-size:.58rem; font-weight:500; letter-spacing:.12em;
+      font-family:var(--mono); font-size:.62rem; font-weight:500; letter-spacing:.1em;
       text-transform:uppercase; color:var(--muted); margin-top:6px; white-space:nowrap;
     }
 
     /* status line under the masthead */
-    .status{ display:flex; align-items:center; font-size:.87rem; color:var(--muted); margin:0 0 20px; }
+    .status{ display:flex; align-items:center; font-size:.9rem; color:var(--muted); margin:0 0 20px; }
     .status b{ color:var(--ink); font-weight:600; }
 
     /* section labels */
     .eyebrow{
-      font-family:var(--mono); font-size:.6rem; font-weight:500; text-transform:uppercase;
-      letter-spacing:.16em; color:var(--muted); margin:6px 0 10px;
+      font-family:var(--mono); font-size:.64rem; font-weight:500; text-transform:uppercase;
+      letter-spacing:.14em; color:var(--muted); margin:6px 0 10px;
     }
     .sec-row{ display:flex; align-items:center; justify-content:space-between; margin:4px 0 10px; }
     .today-link{
-      font-family:var(--mono); font-size:.62rem; font-weight:500; letter-spacing:.12em;
+      font-family:var(--mono); font-size:.66rem; font-weight:500; letter-spacing:.1em;
       text-transform:uppercase; color:var(--ink); text-decoration:none;
       border:1px solid var(--line-2); padding:7px 14px; border-radius:999px;
-      transition:border-color .12s ease;
+      background:var(--card); transition:border-color .12s ease;
     }
     .today-link:hover{ border-color:var(--ink); }
 
@@ -429,80 +598,119 @@ st.markdown(
     .pill{
       flex:0 0 auto; display:flex; flex-direction:column; align-items:center; gap:6px;
       min-width:62px; padding:10px 6px 9px; border-radius:12px;
-      background:var(--card); border:1px solid var(--line); color:var(--ink);
+      background:var(--card); border:1px solid var(--line-2); color:var(--ink);
       text-decoration:none; transition:border-color .12s ease;
     }
     .pill:hover{ border-color:var(--ink); }
     .pill:focus-visible, .today-link:focus-visible{ outline:2px solid var(--ink); outline-offset:2px; }
     .p-dow{
-      font-family:var(--mono); font-size:.55rem; font-weight:500; text-transform:uppercase;
-      letter-spacing:.1em; color:var(--faint);
+      font-family:var(--mono); font-size:.6rem; font-weight:500; text-transform:uppercase;
+      letter-spacing:.09em; color:var(--muted);
     }
-    .p-dom{ font-family:var(--mono); font-size:1rem; font-weight:600; line-height:1; }
+    .p-dom{ font-family:var(--mono); font-size:1rem; font-weight:600; line-height:1; color:var(--ink); }
     .p-dots{ display:flex; gap:4px; }
-    .p-dot{ width:6px; height:6px; border-radius:50%; box-shadow:inset 0 0 0 1px var(--line-2); }
+    .p-dot{ width:7px; height:7px; border-radius:50%; box-shadow:inset 0 0 0 1.5px var(--line-2); }
     .p-dot.a.on{ background:var(--a); box-shadow:none; }
     .p-dot.b.on{ background:var(--b); box-shadow:none; }
-    .pill.is-today{ border-color:var(--line-2); }
-    .pill.is-today .p-dow{ color:var(--ink); }
-    .pill.is-selected{ background:var(--ink); border-color:var(--ink); color:#fff; }
-    .pill.is-selected .p-dow{ color:rgba(255,255,255,.55); }
-    .pill.is-selected .p-dot{ box-shadow:inset 0 0 0 1px rgba(255,255,255,.35); }
+    .pill.is-today{ border-color:var(--faint); }
+    .pill.is-today .p-dow{ color:var(--ink); font-weight:600; }
+    .pill.is-selected{ background:var(--ink); border-color:var(--ink); }
+    .pill.is-selected .p-dow{ color:rgba(255,255,255,.75); }
+    .pill.is-selected .p-dom{ color:#fff; }
+    .pill.is-selected .p-dot{ box-shadow:inset 0 0 0 1.5px rgba(255,255,255,.4); }
     .pill.is-selected .p-dot.a.on{ background:#a5b4fc; box-shadow:none; }
     .pill.is-selected .p-dot.b.on{ background:#fdba74; box-shadow:none; }
 
     /* selected date heading */
     .sel-date{ display:flex; align-items:baseline; gap:10px; padding-top:6px; }
     .sd-main{ font-size:1.14rem; font-weight:600; letter-spacing:-.02em; }
-    .sd-year{ font-family:var(--mono); font-size:.66rem; color:var(--faint); }
+    .sd-year{ font-family:var(--mono); font-size:.7rem; color:var(--muted); }
 
-    /* person panels — hairline card, 2px person rule on top */
+    /* person panels — hairline card, 3px person rule on top */
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.mk-a){
-      border:1px solid var(--line) !important; border-top:2px solid var(--a) !important;
+      border:1px solid var(--line-2) !important; border-top:3px solid var(--a) !important;
       border-radius:14px !important; background:var(--card);
     }
     div[data-testid="stVerticalBlockBorderWrapper"]:has(.mk-b){
-      border:1px solid var(--line) !important; border-top:2px solid var(--b) !important;
+      border:1px solid var(--line-2) !important; border-top:3px solid var(--b) !important;
       border-radius:14px !important; background:var(--card);
     }
     .pname-row{ display:flex; align-items:center; justify-content:space-between; margin:0 0 12px; }
-    .pname{ font-size:1rem; font-weight:600; letter-spacing:-.01em; }
+    .pname{ font-size:1.02rem; font-weight:600; letter-spacing:-.01em; color:var(--ink); }
     .pmeta{
-      font-family:var(--mono); font-size:.58rem; font-weight:500; letter-spacing:.12em;
+      font-family:var(--mono); font-size:.62rem; font-weight:500; letter-spacing:.1em;
       text-transform:uppercase; color:var(--muted);
     }
-    .avg-line{ font-family:var(--mono); font-size:.66rem; color:var(--muted); margin:2px 0 12px; }
+
+    /* item table micro-headers + totals strip */
+    .fh{
+      font-family:var(--mono); font-size:.58rem; font-weight:500; letter-spacing:.08em;
+      text-transform:uppercase; color:var(--muted); padding:2px 2px 0;
+    }
+    .totals{
+      font-family:var(--mono); font-size:.76rem; color:var(--muted);
+      border-top:1px solid var(--line-2); border-bottom:1px solid var(--line-2);
+      padding:9px 2px; margin:10px 0 12px; letter-spacing:.01em;
+    }
+    .totals b{ color:var(--ink); font-weight:600; }
+    .avg-line{ font-family:var(--mono); font-size:.7rem; color:var(--muted); margin:2px 0 12px; }
     .avg-line b{ color:var(--ink); font-weight:600; }
 
     /* trend stat cells — hairline top rule, mono values */
-    .sg-head{ display:flex; align-items:center; font-weight:600; font-size:.92rem; margin:6px 0 12px; }
-    .statgrid{ display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:10px; }
+    .sg-head{ display:flex; align-items:center; font-weight:600; font-size:.94rem; margin:14px 0 12px; color:var(--ink); }
+    .statgrid{ display:grid; grid-template-columns:repeat(6,1fr); gap:14px; margin-bottom:10px; }
     .sg{ border-top:1px solid var(--line-2); padding-top:9px; }
-    .sg .v{ font-family:var(--mono); font-size:1.02rem; font-weight:600; letter-spacing:-.01em; }
+    .sg .v{ font-family:var(--mono); font-size:1.02rem; font-weight:600; letter-spacing:-.01em; color:var(--ink); }
     .sg .l{
-      font-family:var(--mono); font-size:.56rem; font-weight:500; letter-spacing:.1em;
-      text-transform:uppercase; color:var(--faint); margin-top:4px;
+      font-family:var(--mono); font-size:.6rem; font-weight:500; letter-spacing:.08em;
+      text-transform:uppercase; color:var(--muted); margin-top:4px;
     }
 
+    /* in-app log — scrollable ledger table, sticky header, theme-proof */
+    .logwrap{
+      max-height:440px; overflow:auto; border:1px solid var(--line-2);
+      border-radius:14px; background:var(--card);
+    }
+    table.ledger{ width:100%; min-width:760px; border-collapse:collapse; background:var(--card); }
+    .ledger th{
+      position:sticky; top:0; z-index:1; background:var(--card);
+      font-family:var(--mono); font-size:.6rem; font-weight:500; letter-spacing:.09em;
+      text-transform:uppercase; color:var(--muted); text-align:left;
+      padding:11px 12px 9px; border-bottom:1px solid var(--line-2);
+    }
+    .ledger th.num{ text-align:right; width:58px; }
+    .ledger th.date{ width:112px; }
+    .ledger th.items{ width:26%; }
+    .ledger td{
+      padding:10px 12px; border-bottom:1px solid var(--line);
+      font-size:.85rem; color:var(--ink); vertical-align:top;
+    }
+    .ledger tr:last-child td{ border-bottom:none; }
+    .ledger td.date{ font-family:var(--mono); font-size:.76rem; font-weight:600; white-space:nowrap; }
+    .ledger td.num{ font-family:var(--mono); font-size:.78rem; text-align:right; white-space:nowrap; }
+    .ledger td.items{ color:var(--ink); font-size:.82rem; }
+    .ledger td.notes{ color:var(--muted); font-size:.8rem; }
+    .ledger tr:hover td{ background:#fbfbfc; }
+
     .foot{
-      font-family:var(--mono); font-size:.6rem; letter-spacing:.14em; text-transform:uppercase;
-      color:var(--faint); text-align:center; margin-top:40px;
+      font-family:var(--mono); font-size:.64rem; letter-spacing:.12em; text-transform:uppercase;
+      color:var(--muted); text-align:center; margin-top:40px;
     }
 
     /* password gate */
     .gate-wrap{ text-align:center; margin-top:10vh; margin-bottom:6px; }
     .gate-kicker{
-      font-family:var(--mono); font-size:.6rem; font-weight:500; letter-spacing:.22em;
+      font-family:var(--mono); font-size:.64rem; font-weight:500; letter-spacing:.2em;
       text-transform:uppercase; color:var(--muted);
     }
     .gate-title{ font-size:1.5rem; font-weight:700; letter-spacing:-.03em; margin-top:8px; }
-    .gate-sub{ color:var(--muted); font-size:.85rem; margin-top:4px; }
+    .gate-sub{ color:var(--muted); font-size:.86rem; margin-top:4px; }
 
     @media (max-width:860px){
       .mast{ align-items:flex-start; }
       .mast-stats{ gap:22px; }
       .mstat{ text-align:left; }
-      .statgrid{ grid-template-columns:repeat(2,1fr); }
+      .statgrid{ grid-template-columns:repeat(3,1fr); }
     }
     </style>
     """,
@@ -606,7 +814,7 @@ st.markdown(f'<div class="status">{status}</div>', unsafe_allow_html=True)
 
 meta_l, meta_m, meta_r = st.columns([3.2, 1.15, 0.85])
 with meta_l:
-    st.caption(f"Tabs `{ws_map['abhi'].title}` and `{ws_map['shamal'].title}` in the same spreadsheet as before")
+    st.caption("Every entry is saved to your Google Sheet and shown in the Log section below")
 with meta_m:
     st.link_button("Open sheet", sheet_url, use_container_width=True)
 with meta_r:
@@ -687,11 +895,18 @@ st.write("")
 
 
 # =============================================================================
-# Side-by-side check-in panels — Abhi left, Shamal right
+# Side-by-side check-in panels — Abhi left, Shamal right.
+# Each day is a list of line items; totals are computed automatically.
 # =============================================================================
 def reset_person_day_state(person_key, date_str):
-    for prefix in ("cal", "pro", "fib", "notes"):
-        st.session_state.pop(f"{prefix}_{person_key}_{date_str}", None)
+    st.session_state.pop(f"notes_{person_key}_{date_str}", None)
+    clear_item_widget_state(person_key)
+    st.session_state.pop(f"food_items_{person_key}", None)
+    st.session_state[f"loaded_{person_key}"] = None
+
+
+def fmt_g(x) -> str:
+    return f"{safe_float(x):g}"
 
 
 def render_panel(person_key):
@@ -700,12 +915,33 @@ def render_panel(person_key):
     ws = ws_map[person_key]
     existing = by_date[person_key].get(sel_iso)
 
+    # Reload this person's item rows whenever the selected day changes.
+    if st.session_state.get(f"loaded_{person_key}") != sel_iso:
+        existing_items = parse_items(existing.get("items_json", "")) if existing is not None else []
+        if not existing_items and existing is not None:
+            # Day saved by an older version (totals only, no items):
+            # carry the totals into one editable line so nothing is lost.
+            seed = {
+                "name": "(previous total)",
+                "calories": safe_int(existing.get("calories", 0)),
+                "protein": safe_float(existing.get("protein", 0.0)),
+                "carbs": safe_float(existing.get("carbs", 0.0)),
+                "fat": safe_float(existing.get("fat", 0.0)),
+                "fiber": safe_float(existing.get("fiber", 0.0)),
+            }
+            if any(safe_float(seed[m]) for m in MACROS):
+                existing_items = [seed]
+        load_items_into_state(person_key, existing_items)
+        st.session_state[f"loaded_{person_key}"] = sel_iso
+
     w7 = get_window_df(dfp, 7)
     if len(w7):
         avg_html = (
             f'7-day avg — <b>{int(round(w7["calories"].mean())):,} cal</b>'
-            f' · <b>{w7["protein"].mean():.1f} g</b> protein'
-            f' · <b>{w7["fiber"].mean():.1f} g</b> fiber'
+            f' · P <b>{fmt_g(w7["protein"].mean())}</b>'
+            f' · C <b>{fmt_g(w7["carbs"].mean())}</b>'
+            f' · F <b>{fmt_g(w7["fat"].mean())}</b>'
+            f' · Fib <b>{fmt_g(w7["fiber"].mean())}</b>'
         )
     else:
         avg_html = "No entries in the last 7 days yet — today is day one."
@@ -719,28 +955,86 @@ def render_panel(person_key):
             unsafe_allow_html=True,
         )
 
-        n1, n2, n3 = st.columns(3)
-        calories = n1.number_input(
-            "Calories", min_value=0, max_value=20000,
-            value=safe_int(existing.get("calories", 0)) if existing is not None else 0,
-            step=25, key=f"cal_{person_key}_{sel_iso}",
-        )
-        protein = n2.number_input(
-            "Protein (g)", min_value=0.0, max_value=1000.0,
-            value=float(safe_float(existing.get("protein", 0.0))) if existing is not None else 0.0,
-            step=1.0, format="%.1f", key=f"pro_{person_key}_{sel_iso}",
-        )
-        fiber = n3.number_input(
-            "Fiber (g)", min_value=0.0, max_value=300.0,
-            value=float(safe_float(existing.get("fiber", 0.0))) if existing is not None else 0.0,
-            step=1.0, format="%.1f", key=f"fib_{person_key}_{sel_iso}",
+        # ---- item rows: name · cal · protein · carbs · fat · fiber ----
+        head = st.columns(ITEM_COLS, gap="small")
+        for col, label in zip(head, ["Item", "Cal", "Pro", "Carb", "Fat", "Fib", ""]):
+            col.markdown(f'<div class="fh">{label}</div>', unsafe_allow_html=True)
+
+        items_state = st.session_state.get(f"food_items_{person_key}", [empty_item()])
+        for i, item in enumerate(items_state):
+            cols = st.columns(ITEM_COLS, gap="small")
+            cols[0].text_input(
+                "Item", value=str(item.get("name", "")),
+                placeholder="Chicken bowl, shake, oats…",
+                label_visibility="collapsed", key=f"fname_{person_key}_{i}",
+            )
+            cols[1].number_input(
+                "Cal", min_value=0, max_value=20000,
+                value=safe_int(item.get("calories", 0)),
+                label_visibility="collapsed", key=f"fcal_{person_key}_{i}",
+            )
+            cols[2].number_input(
+                "Pro", min_value=0.0, max_value=1000.0,
+                value=float(safe_float(item.get("protein", 0.0))), format="%.1f",
+                label_visibility="collapsed", key=f"fpro_{person_key}_{i}",
+            )
+            cols[3].number_input(
+                "Carb", min_value=0.0, max_value=2000.0,
+                value=float(safe_float(item.get("carbs", 0.0))), format="%.1f",
+                label_visibility="collapsed", key=f"fcarb_{person_key}_{i}",
+            )
+            cols[4].number_input(
+                "Fat", min_value=0.0, max_value=1000.0,
+                value=float(safe_float(item.get("fat", 0.0))), format="%.1f",
+                label_visibility="collapsed", key=f"ffat_{person_key}_{i}",
+            )
+            cols[5].number_input(
+                "Fib", min_value=0.0, max_value=500.0,
+                value=float(safe_float(item.get("fiber", 0.0))), format="%.1f",
+                label_visibility="collapsed", key=f"ffib_{person_key}_{i}",
+            )
+            if cols[6].button("×", key=f"rm_{person_key}_{i}", help="Remove this item"):
+                current = raw_items_from_widgets(person_key)
+                if i < len(current):
+                    current.pop(i)
+                load_items_into_state(person_key, current)
+                st.rerun()
+
+        add_c, copy_c = st.columns([1, 1.35])
+        with add_c:
+            if st.button("Add item", use_container_width=True, key=f"add_{person_key}"):
+                current = raw_items_from_widgets(person_key)
+                current.append(empty_item())
+                load_items_into_state(person_key, current)
+                st.rerun()
+        with copy_c:
+            if st.button("Copy yesterday", use_container_width=True, key=f"copy_{person_key}",
+                         help="Fill the items from this person's previous day"):
+                prev = by_date[person_key].get((sel_date - timedelta(days=1)).isoformat())
+                prev_items = parse_items(prev.get("items_json", "")) if prev is not None else []
+                if prev_items:
+                    load_items_into_state(person_key, prev_items)
+                    st.toast(f"{cfg['name']} — copied yesterday, remember to save")
+                    st.rerun()
+                else:
+                    st.toast("Nothing logged the day before")
+
+        # ---- live totals for the rows above ----
+        t = totals_from(clean_items(raw_items_from_widgets(person_key)))
+        st.markdown(
+            f'<div class="totals">Totals — <b>{t["calories"]:,} cal</b>'
+            f' · P <b>{fmt_g(t["protein"])}</b>'
+            f' · C <b>{fmt_g(t["carbs"])}</b>'
+            f' · F <b>{fmt_g(t["fat"])}</b>'
+            f' · Fib <b>{fmt_g(t["fiber"])}</b></div>',
+            unsafe_allow_html=True,
         )
 
         notes = st.text_area(
             "Notes / progress",
             value=str(existing.get("notes", "")) if existing is not None else "",
             placeholder="Weigh-in, wins, slip-ups, energy — anything worth remembering.",
-            height=100, key=f"notes_{person_key}_{sel_iso}",
+            height=90, key=f"notes_{person_key}_{sel_iso}",
         )
 
         st.markdown(f'<div class="avg-line">{avg_html}</div>', unsafe_allow_html=True)
@@ -756,7 +1050,7 @@ def render_panel(person_key):
         )
 
     if save_clicked:
-        action = upsert_entry(ws, sel_date, calories, protein, fiber, notes)
+        action = upsert_entry(ws, sel_date, raw_items_from_widgets(person_key), notes)
         st.session_state.cache_buster = datetime.now().isoformat()
         verb = "saved" if action == "added" else "updated"
         st.toast(f"{cfg['name']} — {verb} {sel_date.strftime('%b %d')}")
@@ -780,21 +1074,76 @@ with col_shamal:
 
 
 # =============================================================================
+# Log — every saved day, right here in the app
+# =============================================================================
+def ledger_html(dfp):
+    dd = dfp.copy()
+    dd["date_dt"] = pd.to_datetime(dd["date"], errors="coerce")
+    dd = dd.sort_values("date_dt", ascending=False)
+
+    ths = "".join(
+        f'<th class="{c}">{t}</th>'
+        for t, c in [
+            ("Date", "date"), ("Cal", "num"), ("Pro", "num"), ("Carb", "num"),
+            ("Fat", "num"), ("Fib", "num"), ("Items", "items"), ("Notes", "notes"),
+        ]
+    )
+
+    rows = []
+    for _, r in dd.iterrows():
+        if pd.notna(r["date_dt"]):
+            ds = r["date_dt"].strftime("%b %d, %Y")
+        else:
+            ds = escape(str(r["date"]))
+        names = ", ".join(i["name"] for i in parse_items(r["items_json"]) if i["name"])
+        notes = str(r["notes"]).strip()
+        rows.append(
+            f'<tr><td class="date">{ds}</td>'
+            f'<td class="num">{safe_int(r["calories"]):,}</td>'
+            f'<td class="num">{fmt_g(r["protein"])}</td>'
+            f'<td class="num">{fmt_g(r["carbs"])}</td>'
+            f'<td class="num">{fmt_g(r["fat"])}</td>'
+            f'<td class="num">{fmt_g(r["fiber"])}</td>'
+            f'<td class="items">{escape(names) if names else "—"}</td>'
+            f'<td class="notes">{escape(notes)}</td></tr>'
+        )
+
+    return (
+        f'<div class="logwrap"><table class="ledger">'
+        f'<thead><tr>{ths}</tr></thead><tbody>{"".join(rows)}</tbody></table></div>'
+    )
+
+
+st.divider()
+st.markdown('<div class="eyebrow">Log — every saved day</div>', unsafe_allow_html=True)
+log_tabs = st.tabs([PEOPLE[key]["name"] for key in PEOPLE])
+for tab, key in zip(log_tabs, PEOPLE):
+    with tab:
+        dfp = data[key]
+        if dfp.empty:
+            st.info("No entries yet — save a day above and it will show up here.")
+        else:
+            st.markdown(ledger_html(dfp), unsafe_allow_html=True)
+            st.caption(f"{len(dfp)} day{'s' if len(dfp) != 1 else ''} logged · protein, carbs, fat and fiber in grams")
+
+
+# =============================================================================
 # Head-to-head trends
 # =============================================================================
 def statgrid_html(person_key, w, days):
     cfg = PEOPLE[person_key]
     n = len(w)
     avg_cal = int(round(w["calories"].mean())) if n else 0
-    avg_pro = w["protein"].mean() if n else 0.0
-    avg_fib = w["fiber"].mean() if n else 0.0
+    avgs = {m: (w[m].mean() if n else 0.0) for m in ("protein", "carbs", "fat", "fiber")}
     return (
         f'<div class="sg-head"><span class="dot {cfg["css"]}"></span>{cfg["name"]}</div>'
         f'<div class="statgrid">'
         f'<div class="sg"><div class="v">{n}/{days}</div><div class="l">days logged</div></div>'
-        f'<div class="sg"><div class="v">{avg_cal:,}</div><div class="l">avg calories</div></div>'
-        f'<div class="sg"><div class="v">{avg_pro:.1f} g</div><div class="l">avg protein</div></div>'
-        f'<div class="sg"><div class="v">{avg_fib:.1f} g</div><div class="l">avg fiber</div></div>'
+        f'<div class="sg"><div class="v">{avg_cal:,}</div><div class="l">avg cal</div></div>'
+        f'<div class="sg"><div class="v">{fmt_g(avgs["protein"])} g</div><div class="l">avg protein</div></div>'
+        f'<div class="sg"><div class="v">{fmt_g(avgs["carbs"])} g</div><div class="l">avg carbs</div></div>'
+        f'<div class="sg"><div class="v">{fmt_g(avgs["fat"])} g</div><div class="l">avg fat</div></div>'
+        f'<div class="sg"><div class="v">{fmt_g(avgs["fiber"])} g</div><div class="l">avg fiber</div></div>'
         f'</div>'
     )
 
@@ -842,12 +1191,12 @@ def duo_chart(chart_df, ycol, ylabel, days, fmt=",.0f"):
         chart.properties(height=250)
         .configure_view(strokeWidth=0)
         .configure_axis(
-            labelColor="#8b8b94", titleColor="#8b8b94",
-            domainColor="#e7e7ea", tickColor="#e7e7ea", gridColor="#f0f0f3",
+            labelColor="#5f5f68", titleColor="#5f5f68",
+            domainColor="#d6d6dc", tickColor="#d6d6dc", gridColor="#ededf0",
             labelFont="IBM Plex Mono", titleFont="IBM Plex Mono",
-            labelFontSize=10, titleFontSize=10,
+            labelFontSize=11, titleFontSize=11,
         )
-        .configure_legend(labelFont="IBM Plex Mono", labelFontSize=10, labelColor="#18181d")
+        .configure_legend(labelFont="IBM Plex Mono", labelFontSize=11, labelColor="#18181d")
     )
 
 
@@ -861,10 +1210,8 @@ with st.expander("Trends", expanded=False):
 
     windows = {key: get_window_df(data[key], trend_days) for key in PEOPLE}
 
-    s1, s2 = st.columns(2, gap="large")
-    for col, key in ((s1, "abhi"), (s2, "shamal")):
-        with col:
-            st.markdown(statgrid_html(key, windows[key], trend_days), unsafe_allow_html=True)
+    for key in PEOPLE:
+        st.markdown(statgrid_html(key, windows[key], trend_days), unsafe_allow_html=True)
 
     frames = [
         windows[key].assign(person=PEOPLE[key]["name"])
@@ -886,42 +1233,24 @@ with st.expander("Trends", expanded=False):
                 use_container_width=True,
             )
         with c2:
+            st.markdown('<div class="eyebrow">Carbs (g)</div>', unsafe_allow_html=True)
+            st.altair_chart(
+                duo_chart(comb, "carbs", "Carbs (g)", trend_days, fmt=",.1f"),
+                use_container_width=True,
+            )
+
+        c3, c4 = st.columns(2, gap="large")
+        with c3:
+            st.markdown('<div class="eyebrow">Fat (g)</div>', unsafe_allow_html=True)
+            st.altair_chart(
+                duo_chart(comb, "fat", "Fat (g)", trend_days, fmt=",.1f"),
+                use_container_width=True,
+            )
+        with c4:
             st.markdown('<div class="eyebrow">Fiber (g)</div>', unsafe_allow_html=True)
             st.altair_chart(
                 duo_chart(comb, "fiber", "Fiber (g)", trend_days, fmt=",.1f"),
                 use_container_width=True,
-            )
-
-
-# =============================================================================
-# All saved entries
-# =============================================================================
-st.divider()
-with st.expander("All entries"):
-    tabs = st.tabs([PEOPLE[key]["name"] for key in PEOPLE])
-    for tab, key in zip(tabs, PEOPLE):
-        with tab:
-            dfp = data[key]
-            if dfp.empty:
-                st.info("No entries yet.")
-                continue
-
-            display_df = dfp.copy()
-            display_df["date_dt"] = pd.to_datetime(display_df["date"], errors="coerce")
-            display_df = display_df.sort_values("date_dt", ascending=False)
-
-            st.dataframe(
-                display_df[["date_dt", "calories", "protein", "fiber", "notes", "updated_at"]],
-                use_container_width=True,
-                hide_index=True,
-                column_config={
-                    "date_dt": st.column_config.DateColumn("Date", format="MMM D, YYYY"),
-                    "calories": st.column_config.NumberColumn("Calories", format="%d"),
-                    "protein": st.column_config.NumberColumn("Protein (g)", format="%.1f"),
-                    "fiber": st.column_config.NumberColumn("Fiber (g)", format="%.1f"),
-                    "notes": st.column_config.TextColumn("Notes / progress", width="large"),
-                    "updated_at": st.column_config.TextColumn("Updated"),
-                },
             )
 
 st.markdown(

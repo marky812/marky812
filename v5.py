@@ -4,13 +4,13 @@ FOURTEEN — Dan × Shamal
 A 14-day diet + movement pact. Two people, one number each per day.
 
 Daily bar
-  Dan     1800 NET calories · 30 min cardio · 10 min strength
+  Dan     1800 NET calories
   Shamal  1800 TOTAL calories · 30 min cardio · 10 min strength
 
 Miss a day: $50 fat tax + one embarrassing text to Armina.
 
 Data lands in tabs ("dan_log", "shamal_log") inside the SAME Google Sheet
-the old tracker uses — nothing existing is touched. Password is unchanged.
+the old tracker uses — nothing existing is touched.
 
 Deploy (Streamlit Community Cloud):
 1. Put this file in a GitHub repo as streamlit_app.py
@@ -36,7 +36,7 @@ import streamlit as st
 from google.oauth2.service_account import Credentials
 
 st.set_page_config(
-    page_title="Fourteen — Dan × Shamal",
+    page_title="Fourteen Day Challenge — Dan × Shamal",
     layout="centered",
     initial_sidebar_state="collapsed",
 )
@@ -63,7 +63,9 @@ PEOPLE = {
     "dan": {
         "name": "DAN",
         "cal_label": "NET CAL",
-        "rule": f"{CAL_CAP} NET · {CARDIO_MIN} CARDIO · {STRENGTH_MIN} STRENGTH",
+        "rule": f"{CAL_CAP} NET",
+        "cardio": 0,            # no movement requirement — calories only
+        "strength": 0,
         "ws_secret": "dan_worksheet_name",
         "ws_default": "dan_log",
     },
@@ -71,6 +73,8 @@ PEOPLE = {
         "name": "SHAMAL",
         "cal_label": "TOTAL CAL",
         "rule": f"{CAL_CAP} TOTAL · {CARDIO_MIN} CARDIO · {STRENGTH_MIN} STRENGTH",
+        "cardio": CARDIO_MIN,
+        "strength": STRENGTH_MIN,
         "ws_secret": "shamal_worksheet_name",
         "ws_default": "shamal_log",
     },
@@ -79,7 +83,7 @@ PEOPLE = {
 # =============================================================================
 # Access gate — same hash as the old app, so the same password keeps working.
 # =============================================================================
-PASSWORD_SHA256 = "f16afbda6ac2d3b4a95b0d042a4d62a1b6ce2b1ada18cf5028bf3869fb5609d2"
+PASSWORD_SHA256 = "79534a7c5a4e5d1b53b0658a9ae1781b20f41a8ce7dae38ee39b631d349ce54f"
 
 
 def _password_ok(attempt: str) -> bool:
@@ -91,7 +95,7 @@ def _password_ok(attempt: str) -> bool:
 def require_password():
     if st.session_state.get("auth_ok"):
         return
-    st.markdown('<div class="gate">FOURTEEN</div>', unsafe_allow_html=True)
+    st.markdown('<div class="gate">FOURTEEN DAY CHALLENGE</div>', unsafe_allow_html=True)
     with st.form("auth"):
         pw = st.text_input(
             "Password", type="password",
@@ -139,15 +143,16 @@ def start_date() -> date:
         return date.fromisoformat(DEFAULT_START)
 
 
-def hit(row) -> bool:
-    """A day counts only if all three are cleared."""
+def hit(person_key, row) -> bool:
+    """A day counts only if that person's own targets are all cleared."""
     if row is None:
         return False
+    cfg = PEOPLE[person_key]
     cal = safe_int(row.get("calories", 0))
     return (
         0 < cal <= CAL_CAP
-        and safe_int(row.get("cardio", 0)) >= CARDIO_MIN
-        and safe_int(row.get("strength", 0)) >= STRENGTH_MIN
+        and safe_int(row.get("cardio", 0)) >= cfg["cardio"]
+        and safe_int(row.get("strength", 0)) >= cfg["strength"]
     )
 
 
@@ -322,8 +327,8 @@ st.markdown(
     div[data-testid="stToast"] *{ color:var(--ink) !important; }
 
     /* masthead */
-    .head{ display:flex; justify-content:space-between; align-items:baseline; }
-    .title{ font-size:1.05rem; font-weight:600; letter-spacing:.34em; }
+    .head{ display:flex; justify-content:space-between; align-items:baseline; flex-wrap:wrap; gap:4px 14px; }
+    .title{ font-size:.88rem; font-weight:600; letter-spacing:.17em; }
     .count{ font-size:.66rem; letter-spacing:.14em; color:var(--mute); }
 
     /* the grid — two rows of fourteen */
@@ -349,8 +354,26 @@ st.markdown(
     }
     .gridwrap{ overflow-x:auto; }
 
-    /* day heading + panels */
-    .day{ font-size:.66rem; letter-spacing:.14em; color:var(--mute); margin:22px 0 2px; }
+    /* dropdown — pinned light so the menu never renders dark-on-dark */
+    div[data-baseweb="select"] > div{
+      background:var(--paper) !important; border-color:var(--line) !important;
+      border-radius:0 !important; min-height:38px;
+    }
+    div[data-baseweb="select"] div, div[data-baseweb="select"] span{
+      color:var(--ink) !important; font-size:.66rem !important; letter-spacing:.12em;
+    }
+    div[data-baseweb="select"] svg{ fill:var(--ink) !important; }
+    div[data-baseweb="popover"] div, div[data-baseweb="menu"], ul[role="listbox"]{
+      background:var(--paper) !important; border-radius:0 !important;
+    }
+    li[role="option"]{ background:var(--paper) !important; }
+    li[role="option"] *{ color:var(--ink) !important; font-size:.66rem !important; letter-spacing:.1em; }
+    li[role="option"]:hover, li[aria-selected="true"]{ background:#f3f3f6 !important; }
+
+    /* day chooser row */
+    .daynav{ margin-top:22px; }
+
+    /* panels */
     .who{
       border-top:1px solid var(--ink); padding-top:9px; margin-bottom:2px;
       display:flex; justify-content:space-between; align-items:baseline; gap:10px;
@@ -364,18 +387,32 @@ st.markdown(
     .tally{ display:flex; justify-content:space-between; font-size:.66rem; letter-spacing:.1em; padding:9px 0; border-bottom:1px solid var(--line); }
     .tally span{ color:var(--mute); }
     .tally b{ font-weight:600; }
-    table.led{ width:100%; border-collapse:collapse; }
+    .ledwrap{ overflow-x:auto; }
+    table.led{ width:100%; min-width:352px; border-collapse:collapse; }
     .led th{
-      font-size:.55rem; letter-spacing:.14em; color:var(--mute); text-transform:uppercase;
-      text-align:right; font-weight:500; padding:0 0 8px; border-bottom:1px solid var(--line);
+      font-size:.52rem; letter-spacing:.11em; color:var(--mute); text-transform:uppercase;
+      font-weight:500; text-align:right; padding:0 0 7px 8px; white-space:nowrap;
     }
-    .led th:first-child, .led th:nth-child(2){ text-align:left; }
-    .led td{ font-size:.68rem; padding:7px 0; border-bottom:1px solid var(--line); text-align:right; white-space:nowrap; }
-    .led td:first-child, .led td:nth-child(2){ text-align:left; color:var(--mute); }
-    .led tr.now td{ color:var(--ink); }
+    .led th.grp{
+      font-size:.6rem; letter-spacing:.16em; color:var(--ink); font-weight:600;
+      text-align:left; padding-bottom:6px;
+    }
+    .led th.k, .led th.d{ text-align:left; padding-left:0; border-bottom:1px solid var(--line); }
+    .led thead tr:last-child th{ border-bottom:1px solid var(--line); }
+    .led th.g, .led td.g{ border-left:1px solid var(--line); padding-left:11px; }
+    .led td{
+      font-size:.68rem; padding:7px 0 7px 8px; border-bottom:1px solid var(--line);
+      text-align:right; white-space:nowrap;
+    }
+    .led td.k, .led td.d{ text-align:left; padding-left:0; color:var(--mute); }
+    .led td.mark{ width:14px; padding-left:9px; }
+    .led tr.now td{ color:var(--ink); font-weight:500; }
     .led tr:last-child td{ border-bottom:none; }
-    .stake{ font-size:.58rem; letter-spacing:.14em; color:var(--mute); text-align:center; margin-top:34px; }
-    .gate{ font-size:1rem; font-weight:600; letter-spacing:.34em; text-align:center; margin:24vh 0 14px; }
+    .stake{
+      font-size:.86rem; font-weight:500; letter-spacing:.06em; line-height:1.5;
+      color:var(--ink); text-align:center; margin-top:36px;
+    }
+    .gate{ font-size:.9rem; font-weight:600; letter-spacing:.17em; text-align:center; margin:24vh 0 14px; }
     </style>
     """,
     unsafe_allow_html=True,
@@ -430,7 +467,7 @@ else:
     counter = f"DAY {(today - day_one).days + 1:02d} / {CHALLENGE_DAYS}"
 
 st.markdown(
-    f'<div class="head"><div class="title">FOURTEEN</div><div class="count">{counter}</div></div>',
+    f'<div class="head"><div class="title">FOURTEEN DAY CHALLENGE</div><div class="count">{counter}</div></div>',
     unsafe_allow_html=True,
 )
 
@@ -448,7 +485,7 @@ for k in PEOPLE:
     for d in days:
         row = by_date[k].get(d.isoformat())
         if row is not None:
-            mark = "done" if hit(row) else "fail"
+            mark = "done" if hit(k, row) else "fail"
         elif d < today:
             mark = "fail"
         else:
@@ -461,10 +498,29 @@ st.markdown('<div class="gridwrap">' + "".join(cells) + "</div>", unsafe_allow_h
 # =============================================================================
 # Check in
 # =============================================================================
-st.markdown(
-    f'<div class="day">DAY {sel_n:02d} · {sel_date.strftime("%a %b %d").upper()}</div>',
-    unsafe_allow_html=True,
-)
+def go_to(d):
+    st.query_params["day"] = d.isoformat()
+    st.rerun()
+
+
+nav_l, nav_m, nav_r = st.columns([0.62, 4, 0.62])
+with nav_l:
+    if st.button("‹", disabled=sel_date <= day_one, use_container_width=True, key="prev_day"):
+        go_to(sel_date - timedelta(days=1))
+with nav_m:
+    choice = st.selectbox(
+        "DAY", days, index=sel_n - 1,
+        format_func=lambda d: (
+            f"DAY {(d - day_one).days + 1:02d} · {d.strftime('%a %b %d').upper()}"
+            + ("  · TODAY" if d == today else "")
+        ),
+        label_visibility="collapsed", key=f"daypick_{sel_iso}",
+    )
+    if choice != sel_date:
+        go_to(choice)
+with nav_r:
+    if st.button("›", disabled=sel_date >= last_day, use_container_width=True, key="next_day"):
+        go_to(sel_date + timedelta(days=1))
 
 
 def panel(key):
@@ -476,41 +532,48 @@ def panel(key):
         unsafe_allow_html=True,
     )
 
-    c1, c2, c3 = st.columns(3)
-    cal = c1.number_input(
+    moves = bool(cfg["cardio"] or cfg["strength"])
+    cols = st.columns(3) if moves else [st]
+
+    cal = cols[0].number_input(
         cfg["cal_label"], min_value=0, max_value=20000, step=10,
         value=safe_int(row["calories"]) if row is not None else 0,
         key=f"cal_{key}_{sel_iso}",
     )
-    cardio = c2.number_input(
-        "CARDIO", min_value=0, max_value=600, step=5,
-        value=safe_int(row["cardio"]) if row is not None else 0,
-        key=f"car_{key}_{sel_iso}",
-    )
-    strength = c3.number_input(
-        "STRENGTH", min_value=0, max_value=600, step=5,
-        value=safe_int(row["strength"]) if row is not None else 0,
-        key=f"str_{key}_{sel_iso}",
-    )
+    if moves:
+        cardio = cols[1].number_input(
+            "CARDIO", min_value=0, max_value=600, step=5,
+            value=safe_int(row["cardio"]) if row is not None else 0,
+            key=f"car_{key}_{sel_iso}",
+        )
+        strength = cols[2].number_input(
+            "STRENGTH", min_value=0, max_value=600, step=5,
+            value=safe_int(row["strength"]) if row is not None else 0,
+            key=f"str_{key}_{sel_iso}",
+        )
+    else:
+        # No inputs shown, so keep whatever is already on the sheet.
+        cardio = safe_int(row["cardio"]) if row is not None else 0
+        strength = safe_int(row["strength"]) if row is not None else 0
+
     note = st.text_input(
         "NOTE", value=str(row["notes"]) if row is not None else "",
         placeholder="OPTIONAL", key=f"note_{key}_{sel_iso}",
     )
 
-    live = {"calories": cal, "cardio": cardio, "strength": strength}
-    if not any(live.values()):
+    if not (cal or cardio or strength):
         state = "NOT LOGGED"
-    elif hit(live):
-        state = "<b>CLEARED</b>"
     else:
         short = []
-        if not 0 < cal <= CAL_CAP:
-            short.append("CALS")
-        if cardio < CARDIO_MIN:
-            short.append(f"CARDIO {CARDIO_MIN - cardio}")
-        if strength < STRENGTH_MIN:
-            short.append(f"STRENGTH {STRENGTH_MIN - strength}")
-        state = "<b>SHORT</b> · " + " · ".join(short)
+        if cal <= 0:
+            short.append("NO CALS")
+        elif cal > CAL_CAP:
+            short.append(f"OVER BY {cal - CAL_CAP:,}")
+        if cardio < cfg["cardio"]:
+            short.append(f"CARDIO {cfg['cardio'] - cardio}")
+        if strength < cfg["strength"]:
+            short.append(f"STRENGTH {cfg['strength'] - strength}")
+        state = "<b>CLEARED</b>" if not short else "<b>SHORT</b> · " + " · ".join(short)
     st.markdown(f'<div class="verdict">{state}</div>', unsafe_allow_html=True)
 
     b1, b2 = st.columns([2, 1])
@@ -543,7 +606,7 @@ def decided(k):
             continue
         row = by_date[k].get(d.isoformat())
         if d < today or row is not None:
-            out.append(hit(row))
+            out.append(hit(k, row))
     return out
 
 
@@ -560,25 +623,47 @@ for k in PEOPLE:
 # =============================================================================
 # Ledger
 # =============================================================================
+# =============================================================================
+# Ledger — one labeled column per number, so nothing needs decoding
+# =============================================================================
+def has_moves(k) -> bool:
+    return bool(PEOPLE[k]["cardio"] or PEOPLE[k]["strength"])
+
+
+group_head, sub_head = "", ""
+for k in PEOPLE:
+    span = 4 if has_moves(k) else 2
+    group_head += f'<th class="grp g" colspan="{span}">{PEOPLE[k]["name"]}</th>'
+    sub_head += '<th class="g">CAL</th>'
+    if has_moves(k):
+        sub_head += "<th>CARDIO</th><th>STRENGTH</th>"
+    sub_head += "<th></th>"
+
 rows = []
 for i, d in enumerate(days, start=1):
     iso = d.isoformat()
-    tds = [f"<td>{i:02d}</td>", f'<td>{d.strftime("%b %d").upper()}</td>']
+    tds = [f'<td class="k">{i:02d}</td>', f'<td class="d">{d.strftime("%b %d").upper()}</td>']
     for k in PEOPLE:
         row = by_date[k].get(iso)
         if row is None:
-            tds.append("<td>—</td>")
+            tds.append('<td class="g">—</td>')
+            if has_moves(k):
+                tds.append("<td></td><td></td>")
+            tds.append('<td class="mark"></td>')
         else:
-            tds.append(
-                f'<td>{safe_int(row["calories"]):,} · {safe_int(row["cardio"])} · '
-                f'{safe_int(row["strength"])} {"✓" if hit(row) else "✗"}</td>'
-            )
+            tds.append(f'<td class="g">{safe_int(row["calories"]):,}</td>')
+            if has_moves(k):
+                tds.append(
+                    f'<td>{safe_int(row["cardio"])}</td><td>{safe_int(row["strength"])}</td>'
+                )
+            tds.append(f'<td class="mark">{"✓" if hit(k, row) else "✗"}</td>')
     rows.append(f'<tr class="{"now" if d == today else ""}">{"".join(tds)}</tr>')
 
 st.markdown(
-    '<table class="led"><thead><tr><th>#</th><th>DATE</th>'
-    + "".join(f'<th>{PEOPLE[k]["name"]}</th>' for k in PEOPLE)
-    + f'</tr></thead><tbody>{"".join(rows)}</tbody></table>',
+    '<div class="ledwrap"><table class="led"><thead>'
+    f'<tr><th class="k" rowspan="2">#</th><th class="d" rowspan="2">DATE</th>{group_head}</tr>'
+    f'<tr>{sub_head}</tr>'
+    f'</thead><tbody>{"".join(rows)}</tbody></table></div>',
     unsafe_allow_html=True,
 )
 
@@ -591,6 +676,6 @@ with f2:
         st.rerun()
 
 st.markdown(
-    f'<div class="stake">EACH MISS · ${FINE} · ONE TEXT TO ARMINA</div>',
+    f'<div class="stake">EACH MISS is ${FINE}<br>and ONE TEXT TO ARMINA</div>',
     unsafe_allow_html=True,
 )

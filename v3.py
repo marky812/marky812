@@ -103,18 +103,8 @@ def require_password():
     _, mid, _ = st.columns([1, 1.3, 1])
     with mid:
         st.markdown(
-            """
-            <div style="text-align:center;margin-top:7vh">
-              <div style="width:58px;height:58px;margin:0 auto;border-radius:19px;
-                          display:flex;align-items:center;justify-content:center;font-size:26px;
-                          background:linear-gradient(135deg,#2563eb,#0f172a);
-                          box-shadow:0 14px 28px -14px rgba(15,23,42,.65)">🔒</div>
-              <div style="font-family:'Rubik',sans-serif;font-size:1.5rem;font-weight:800;
-                          letter-spacing:-.02em;color:#16213a;margin-top:12px">Daily Wellness</div>
-              <div style="color:#64748b;font-size:.9rem;margin-top:3px">
-                Enter the password to continue.</div>
-            </div>
-            """,
+            '<div class="gate">DAILY WELLNESS</div>'
+            '<div class="gate-sub">Enter the password to continue</div>',
             unsafe_allow_html=True,
         )
         with st.form("auth_form"):
@@ -528,201 +518,286 @@ def get_window_df(df, days: int):
 
 
 # =============================================================================
-# Styling — steel blue / navy identity with amber + teal accents, Rubik
-# throughout. Hierarchy comes from Rubik's weight range (400 body → 800/900
-# display). Variable names kept from the old palette (--mag/--pur) so every
-# selector below works unchanged — only the color VALUES changed.
+# Styling — one typeface, one ink, no color. IBM Plex Mono everywhere, square
+# corners, hairline borders; hierarchy comes from weight, size and letter-
+# spacing instead of color. Everything is pinned light so phones in dark mode
+# still read correctly. Class names are unchanged from the old build, so all
+# the HTML rendered below works as-is — only the look changed.
 # =============================================================================
 st.markdown(
     """
     <style>
-    @import url('https://fonts.googleapis.com/css2?family=Rubik:wght@400;500;600;700;800;900&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
-    :root{
-      --mag-soft:#bfdbfe; --mag:#2563eb; --mag-deep:#1e40af;
-      --yel-soft:#fdf0cf; --yel:#f59e0b; --yel-deep:#d97706; --yel-ink:#92600a;
-      --cyn-soft:#c7f0ea; --cyn:#2dd4bf; --cyn-deep:#0f766e;
-      --red:#dc2626; --pur:#0f172a; --grn:#16a34a;
-      --bg:#f7f8fa; --card:#FFFFFF;
-      --ink:#16213a; --muted:#64748b; --line:#e2e8f0;
-    }
+    :root{ --ink:#111114; --mute:#93939c; --line:#e6e6ea; --soft:#f3f3f6; --paper:#ffffff; }
+    html{ color-scheme:light; }
 
-    html, body, [class*="css"], .stMarkdown, button, input, textarea, select,
+    html, body, [class*="css"], .stMarkdown, input, textarea, button, select, table,
     h1, h2, h3, h4, h5, h6{
-      font-family:'Rubik',-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif !important;
+      font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace !important;
+      color:var(--ink);
     }
-    [data-testid="stAppViewContainer"]{ background:var(--bg); }
-    .block-container{ padding-top:1.3rem; padding-bottom:3rem; max-width:1180px; }
+    [data-testid="stApp"], [data-testid="stAppViewContainer"]{ background:var(--paper) !important; }
+    header[data-testid="stHeader"]{ background:transparent; }
     #MainMenu, footer{ visibility:hidden; }
+    .block-container{ max-width:1180px; padding-top:2.2rem; padding-bottom:4rem; }
+    hr{ border:none; border-top:1px solid var(--line); margin:1.6rem 0; }
+    code{ background:var(--soft); color:var(--ink); border-radius:0; padding:1px 5px; }
+    a{ color:var(--ink); }
 
-    div[data-testid="stButton"] > button{
-      width:100%; border-radius:14px; border:1.5px solid var(--line); background:var(--card);
-      min-height:42px; font-weight:600; transition:all .12s ease;
+    /* widget labels + placeholders */
+    div[data-testid="stWidgetLabel"] p{
+      font-size:.6rem !important; font-weight:500 !important; letter-spacing:.14em;
+      text-transform:uppercase; color:var(--mute) !important;
     }
-    div[data-testid="stButton"] > button:hover{
-      border-color:var(--mag-soft); color:var(--mag-deep); transform:translateY(-1px);
+    .stTextInput input::placeholder, .stNumberInput input::placeholder,
+    .stTextArea textarea::placeholder{
+      color:var(--mute) !important; opacity:1; text-transform:uppercase; letter-spacing:.08em;
     }
-    button[kind="primary"], button[kind="primaryFormSubmit"]{
-      background-image:linear-gradient(135deg,var(--mag),var(--pur)) !important;
-      border:0 !important; color:#fff !important;
-      box-shadow:0 10px 22px -12px rgba(15,23,42,.65) !important;
+
+    /* inputs */
+    div[data-baseweb="input"], div[data-baseweb="textarea"], div[data-baseweb="base-input"]{
+      background:var(--paper) !important; border-color:var(--line) !important; border-radius:0 !important;
     }
-    button[kind="primary"]:hover, button[kind="primaryFormSubmit"]:hover{ filter:brightness(1.12); }
+    div[data-baseweb="input"]:focus-within, div[data-baseweb="textarea"]:focus-within{
+      border-color:var(--ink) !important; box-shadow:none !important;
+    }
     .stTextInput input, .stNumberInput input, .stTextArea textarea{
-      border-radius:12px !important; background:var(--card);
+      background:var(--paper) !important; color:var(--ink) !important;
+      -webkit-text-fill-color:var(--ink); caret-color:var(--ink);
+      border-radius:0 !important; font-size:.88rem !important; font-weight:500;
     }
+    [data-testid="stNumberInputStepUp"], [data-testid="stNumberInputStepDown"]{
+      background:var(--paper) !important; color:var(--ink) !important; border-radius:0 !important;
+    }
+    [data-testid="stNumberInputStepUp"] svg, [data-testid="stNumberInputStepDown"] svg{ fill:var(--ink) !important; }
+
+    /* buttons */
+    div[data-testid="stButton"] > button, [data-testid^="stBaseButton"],
+    [data-testid^="stBaseLinkButton"], div[data-testid="stLinkButton"] > a{
+      width:100%; border-radius:0 !important; border:1px solid var(--line) !important;
+      background:var(--paper) !important; color:var(--ink) !important;
+      min-height:38px; box-shadow:none !important;
+      font-size:.66rem !important; font-weight:500 !important; letter-spacing:.14em; text-transform:uppercase;
+      transition:border-color .12s ease;
+    }
+    div[data-testid="stButton"] > button p, [data-testid^="stBaseButton"] p,
+    [data-testid^="stBaseLinkButton"] p, div[data-testid="stLinkButton"] > a p{ color:inherit !important; }
+    div[data-testid="stButton"] > button:hover, [data-testid^="stBaseButton"]:hover,
+    [data-testid^="stBaseLinkButton"]:hover, div[data-testid="stLinkButton"] > a:hover{
+      border-color:var(--ink) !important;
+    }
+    button[kind="primary"], button[kind="primaryFormSubmit"],
+    [data-testid="stBaseButton-primary"], [data-testid="stBaseButton-primaryFormSubmit"]{
+      background:var(--ink) !important; border-color:var(--ink) !important; color:#fff !important;
+    }
+    button[kind="primary"] p, button[kind="primaryFormSubmit"] p,
+    [data-testid="stBaseButton-primary"] p, [data-testid="stBaseButton-primaryFormSubmit"] p{ color:#fff !important; }
+    div[data-testid="stButton"] > button:disabled, [data-testid^="stBaseButton"]:disabled{ opacity:.35; }
+
+    /* checkboxes + radios — square, ink */
+    [data-testid="stCheckbox"] p{
+      font-size:.66rem !important; letter-spacing:.1em; text-transform:uppercase; color:var(--ink) !important;
+    }
+    label[data-baseweb="checkbox"] span:first-of-type{
+      border-radius:0 !important; border-color:var(--line) !important;
+    }
+    label[data-baseweb="checkbox"]:has(input:checked) span:first-of-type{
+      background:var(--ink) !important; border-color:var(--ink) !important;
+    }
+    div[data-testid="stRadio"] label p{
+      font-size:.62rem !important; letter-spacing:.12em; text-transform:uppercase; font-weight:500 !important;
+    }
+    label[data-baseweb="radio"] div:first-of-type{ border-color:var(--line) !important; background:var(--paper) !important; }
+    label[data-baseweb="radio"]:has(input:checked) div:first-of-type{ border-color:var(--ink) !important; }
+    label[data-baseweb="radio"]:has(input:checked) div:first-of-type > div{ background:var(--ink) !important; }
 
     /* progress bar (habits done) */
     div[data-testid="stProgress"] > div > div > div > div,
-    .stProgress > div > div > div > div{
-      background-image:linear-gradient(90deg,var(--mag),var(--pur));
+    .stProgress > div > div > div > div{ background:var(--ink); }
+    div[data-testid="stProgress"] p{
+      font-size:.6rem !important; letter-spacing:.12em; text-transform:uppercase; color:var(--mute) !important;
     }
 
-    /* tabs + radio */
-    div[data-baseweb="tab-highlight"]{ background:var(--mag); }
-    button[data-baseweb="tab"]{ font-weight:600; }
-    button[data-baseweb="tab"][aria-selected="true"]{ color:var(--mag-deep); }
-    div[data-testid="stRadio"] label{ font-weight:600; }
+    /* tabs */
+    div[data-baseweb="tab-highlight"]{ background:var(--ink); }
+    div[data-baseweb="tab-border"]{ background:var(--line); }
+    button[data-baseweb="tab"]{ font-weight:500; letter-spacing:.14em; text-transform:uppercase; color:var(--mute); }
+    button[data-baseweb="tab"] p{ font-size:.64rem !important; color:inherit !important; }
+    button[data-baseweb="tab"][aria-selected="true"], button[data-baseweb="tab"][aria-selected="true"] p{
+      color:var(--ink) !important;
+    }
 
-    /* expander */
+    /* expanders + forms + bordered containers */
     div[data-testid="stExpander"] details{
-      border:1.5px solid var(--line); border-radius:16px; background:var(--card);
+      border:1px solid var(--line) !important; border-radius:0 !important; background:var(--paper);
     }
+    div[data-testid="stExpander"] summary p, div[data-testid="stExpander"] summary span{
+      font-size:.68rem !important; font-weight:600 !important; letter-spacing:.15em; text-transform:uppercase;
+    }
+    div[data-testid="stForm"]{ border:1px solid var(--line) !important; border-radius:0 !important; background:var(--paper); }
+    div[data-testid="stVerticalBlockBorderWrapper"],
+    div[data-testid="stVerticalBlockBorderWrapper"] > div{ border-radius:0 !important; }
 
-    /* hero — steel blue→navy base with subtle amber + teal glows layered on top */
-    .hero{
-      display:flex; align-items:center; justify-content:space-between; gap:22px; flex-wrap:wrap;
-      color:#fff; padding:26px 30px; border-radius:26px; margin-bottom:18px;
-      background:
-        radial-gradient(560px 240px at 88% -30%, rgba(245,158,11,.22), transparent 60%),
-        radial-gradient(520px 240px at -8% 130%, rgba(45,212,191,.22), transparent 60%),
-        linear-gradient(120deg,var(--mag) 0%,var(--mag-deep) 55%,var(--pur) 100%);
-      box-shadow:0 18px 44px -18px rgba(15,23,42,.55);
+    /* alerts + toasts stay light */
+    div[data-testid="stAlert"]{ background:var(--paper) !important; border:1px solid var(--line) !important; border-radius:0 !important; }
+    div[data-testid="stAlert"] *{ color:var(--ink) !important; }
+    div[data-testid="stToast"]{ background:var(--paper) !important; border:1px solid var(--ink); border-radius:0; }
+    div[data-testid="stToast"] *{ color:var(--ink) !important; }
+
+    /* metric tiles */
+    div[data-testid="stMetric"]{ border:1px solid var(--line); border-radius:0; padding:12px 14px; background:var(--paper); }
+    [data-testid="stMetricLabel"] p{
+      font-size:.56rem !important; letter-spacing:.12em; text-transform:uppercase; color:var(--mute) !important;
     }
-    .hero-left{ display:flex; align-items:center; gap:16px; }
-    .hero-mark{ font-size:30px; line-height:1; }
-    .hero-title{ font-size:2rem; font-weight:800; letter-spacing:-.02em; line-height:1.05; }
-    .hero-sub{ font-size:.93rem; opacity:.9; font-weight:500; margin-top:3px; }
-    .hero-stats{ display:flex; gap:28px; }
+    [data-testid="stMetricValue"]{ font-size:1.15rem !important; font-weight:600; }
+
+    /* captions, subheaders, spinner, dataframe */
+    [data-testid="stCaptionContainer"] p{ font-size:.62rem !important; color:var(--mute) !important; letter-spacing:.05em; }
+    h3{ font-size:.9rem !important; font-weight:600 !important; letter-spacing:.16em; text-transform:uppercase; }
+    div[data-testid="stSpinner"] p{ font-size:.62rem !important; letter-spacing:.12em; text-transform:uppercase; color:var(--mute) !important; }
+    div[data-testid="stDataFrame"]{ border:1px solid var(--line); }
+
+    /* dropdowns + popovers (date picker etc.) — pinned light */
+    div[data-baseweb="select"] > div{
+      background:var(--paper) !important; border-color:var(--line) !important; border-radius:0 !important;
+    }
+    div[data-baseweb="popover"], div[data-baseweb="popover"] > div,
+    div[data-baseweb="menu"], ul[role="listbox"]{
+      background:var(--paper) !important; border-radius:0 !important;
+    }
+    li[role="option"]{ background:var(--paper) !important; }
+    li[role="option"]:hover, li[aria-selected="true"]{ background:var(--soft) !important; }
+    div[data-baseweb="calendar"]{ background:var(--paper) !important; }
+
+    /* access gate */
+    .gate{ font-size:.9rem; font-weight:600; letter-spacing:.17em; text-align:center; margin:22vh 0 6px; }
+    .gate-sub{ font-size:.58rem; letter-spacing:.14em; text-transform:uppercase; color:var(--mute);
+               text-align:center; margin-bottom:14px; }
+
+    /* masthead */
+    .mast{
+      display:flex; justify-content:space-between; align-items:flex-end; gap:10px 26px; flex-wrap:wrap;
+      padding-bottom:16px; border-bottom:1px solid var(--ink); margin-bottom:16px;
+    }
+    .mast .title{ font-size:1rem; font-weight:600; letter-spacing:.18em; }
+    .mast .sub{ font-size:.58rem; letter-spacing:.14em; text-transform:uppercase; color:var(--mute); margin-top:5px; }
+    .mast .stats{ display:flex; gap:30px; }
     .hstat{ text-align:right; }
-    .hstat .v{ font-size:1.5rem; font-weight:800; letter-spacing:-.02em; line-height:1; }
-    .hstat .l{ font-size:.7rem; opacity:.85; font-weight:600; text-transform:uppercase; letter-spacing:.07em; margin-top:5px; }
+    .hstat .v{ font-size:1.05rem; font-weight:600; line-height:1; }
+    .hstat .v .dim{ color:var(--mute); font-size:.72em; font-weight:500; }
+    .hstat .l{ font-size:.52rem; letter-spacing:.14em; text-transform:uppercase; color:var(--mute); margin-top:5px; }
 
     /* eyebrows + section rows */
-    .eyebrow{ font-size:.72rem; font-weight:700; text-transform:uppercase; letter-spacing:.12em; color:var(--muted); margin:8px 0 10px; }
+    .eyebrow{ font-size:.6rem; font-weight:500; text-transform:uppercase; letter-spacing:.16em; color:var(--mute); margin:8px 0 10px; }
     .sec-row{ display:flex; align-items:center; justify-content:space-between; margin:8px 0 10px; }
-    .today-pill{ font-size:.78rem; font-weight:700; color:var(--mag-deep); text-decoration:none; background:var(--mag-soft); padding:6px 13px; border-radius:999px; }
-    .today-pill:hover{ filter:brightness(1.03); }
+    .today-pill{
+      font-size:.6rem; font-weight:500; letter-spacing:.14em; text-transform:uppercase; color:var(--ink);
+      text-decoration:none; border:1px solid var(--line); padding:6px 13px; transition:border-color .12s ease;
+    }
+    .today-pill:hover{ border-color:var(--ink); }
 
     /* quick day strip — the fast way to pick a day without scrolling a calendar */
     .strip{ display:flex; gap:8px; overflow-x:auto; padding:4px 2px 12px; }
     .pill{
-      flex:0 0 auto; display:flex; flex-direction:column; align-items:center; gap:4px;
-      min-width:66px; padding:10px 8px; border-radius:16px;
-      background:var(--card); border:1.5px solid var(--line); color:var(--ink);
-      text-decoration:none; transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+      flex:0 0 auto; display:flex; flex-direction:column; align-items:center; gap:5px;
+      min-width:64px; padding:10px 8px;
+      background:var(--paper); border:1px solid var(--line); color:var(--ink);
+      text-decoration:none; transition:border-color .12s ease;
     }
-    .pill:hover{ transform:translateY(-2px); box-shadow:0 10px 20px -12px rgba(15,23,42,.25); border-color:var(--mag-soft); }
-    .pill .p-dow{ font-size:.64rem; font-weight:700; text-transform:uppercase; letter-spacing:.06em; color:var(--muted); }
-    .pill .p-dom{ font-size:1.15rem; font-weight:800; line-height:1; }
-    .p-dot{ width:7px; height:7px; border-radius:50%; border:1.5px solid var(--line); background:transparent; }
-    .p-dot.on{ background:var(--mag); border-color:var(--mag); }
-    .pill.is-today{ border-color:var(--cyn); box-shadow:0 0 0 2px rgba(45,212,191,.28); }
-    .pill.is-selected{
-      background:linear-gradient(135deg,var(--mag),var(--pur)); border-color:transparent; color:#fff;
-      box-shadow:0 12px 24px -12px rgba(15,23,42,.6);
-    }
-    .pill.is-selected .p-dow{ color:rgba(255,255,255,.85); }
-    .pill.is-selected .p-dot{ border-color:rgba(255,255,255,.55); }
-    .pill.is-selected .p-dot.on{ background:#fff; border-color:#fff; }
+    .pill:hover{ border-color:var(--ink); }
+    .pill .p-dow{ font-size:.55rem; font-weight:500; text-transform:uppercase; letter-spacing:.1em; color:var(--mute); }
+    .pill .p-dom{ font-size:1rem; font-weight:600; line-height:1; }
+    .p-dot{ width:8px; height:8px; border-radius:50%; box-shadow:inset 0 0 0 1px var(--line); background:transparent; }
+    .p-dot.on{ background:var(--ink); box-shadow:none; }
+    .pill.is-today .p-dow{ color:var(--ink); font-weight:600; border-bottom:1px solid var(--ink); padding-bottom:1px; }
+    .pill.is-selected{ background:var(--ink); border-color:var(--ink); color:#fff; }
+    .pill.is-selected .p-dow{ color:rgba(255,255,255,.75); border-color:rgba(255,255,255,.75); }
+    .pill.is-selected .p-dot{ box-shadow:inset 0 0 0 1px rgba(255,255,255,.55); }
+    .pill.is-selected .p-dot.on{ background:#fff; box-shadow:none; }
 
     /* calendar (inside the expander) */
     .cal-head{ display:grid; grid-template-columns:repeat(7,1fr); gap:8px; margin-bottom:8px; }
-    .cal-head span{ text-align:center; font-size:.7rem; font-weight:700; color:var(--muted); text-transform:uppercase; letter-spacing:.06em; }
+    .cal-head span{ text-align:center; font-size:.55rem; font-weight:500; color:var(--mute); text-transform:uppercase; letter-spacing:.1em; }
     .cal-grid{ display:grid; grid-template-columns:repeat(7,1fr); gap:8px; }
     .day{
-      display:flex; flex-direction:column; gap:6px; min-height:96px; padding:9px 10px; border-radius:14px;
-      background:var(--card); border:1.5px solid var(--line); color:var(--ink);
-      text-decoration:none; transition:transform .12s ease, box-shadow .12s ease, border-color .12s ease;
+      display:flex; flex-direction:column; gap:6px; min-height:96px; padding:9px 10px;
+      background:var(--paper); border:1px solid var(--line); color:var(--ink);
+      text-decoration:none; transition:border-color .12s ease;
     }
-    .day:hover{ transform:translateY(-2px); box-shadow:0 10px 22px -12px rgba(15,23,42,.25); border-color:var(--mag-soft); }
+    .day:hover{ border-color:var(--ink); }
     .day-top{ display:flex; align-items:baseline; justify-content:space-between; }
-    .day .dow{ font-size:.7rem; font-weight:700; color:var(--muted); }
-    .day .dom{ font-size:1.05rem; font-weight:800; }
-    .day-empty{ color:#dbe3f0; font-weight:700; font-size:1.05rem; margin:auto; }
+    .day .dow{ font-size:.55rem; font-weight:500; color:var(--mute); text-transform:uppercase; letter-spacing:.08em; }
+    .day .dom{ font-size:.95rem; font-weight:600; }
+    .day-empty{ color:#d9d9de; font-weight:500; font-size:.95rem; margin:auto; }
     .chips{ display:flex; flex-wrap:wrap; gap:4px; }
-    .chip{ font-size:.64rem; font-weight:700; padding:2px 6px; border-radius:999px; white-space:nowrap; }
-    .chip.cal{ background:var(--yel-soft); color:var(--yel-ink); }
-    .chip.pro{ background:var(--cyn-soft); color:var(--cyn-deep); }
-    .dots{ display:flex; gap:4px; margin-top:auto; flex-wrap:wrap; }
-    .dot{ width:8px; height:8px; border-radius:50%; background:transparent; border:1.5px solid var(--line); }
-    .dot.on{ background:var(--mag); border-color:var(--mag); }
-
-    .day.is-logged{ border-color:var(--mag-soft); background:linear-gradient(180deg,#fff,#f4f8ff); }
-    .day.is-today{ border-color:var(--cyn); box-shadow:0 0 0 2px rgba(45,212,191,.28); }
-    .day.is-selected{
-      background:linear-gradient(140deg,var(--mag),var(--pur)); border-color:transparent; color:#fff;
-      box-shadow:0 12px 24px -12px rgba(15,23,42,.62);
+    .chip{
+      font-size:.52rem; font-weight:500; letter-spacing:.06em; text-transform:uppercase;
+      padding:2px 6px; border:1px solid var(--line); color:var(--ink); white-space:nowrap;
     }
+    .dots{ display:flex; gap:4px; margin-top:auto; flex-wrap:wrap; }
+    .dot{ width:8px; height:8px; border-radius:50%; background:transparent; box-shadow:inset 0 0 0 1px var(--line); }
+    .dot.on{ background:var(--ink); box-shadow:none; }
+
+    .day.is-logged{ border-color:#cfcfd6; }
+    .day.is-today{ border-color:var(--ink); }
+    .day.is-selected{ background:var(--ink); border-color:var(--ink); color:#fff; }
     .day.is-selected .dow, .day.is-selected .dom, .day.is-selected .day-empty{ color:#fff; }
-    .day.is-selected .chip.cal, .day.is-selected .chip.pro{ background:rgba(255,255,255,.22); color:#fff; }
-    .day.is-selected .dot{ border-color:rgba(255,255,255,.55); }
-    .day.is-selected .dot.on{ background:#fff; border-color:#fff; }
-    .day.is-future .day-empty{ color:#e9eef6; }
+    .day.is-selected .chip{ border-color:rgba(255,255,255,.5); color:#fff; }
+    .day.is-selected .dot{ box-shadow:inset 0 0 0 1px rgba(255,255,255,.55); }
+    .day.is-selected .dot.on{ background:#fff; box-shadow:none; }
+    .day.is-future .day-empty{ color:#ececf0; }
 
     /* month grouping — each month is its own clearly labelled panel */
-    .month-card{ border:1.5px solid var(--line); border-radius:20px; padding:14px 18px 18px; background:var(--bg); margin-bottom:16px; }
-    .month-head{ display:flex; align-items:baseline; gap:10px; margin-bottom:12px; padding-bottom:10px; border-bottom:1.5px solid var(--line); }
-    .month-name{ font-size:1.35rem; font-weight:800; color:var(--ink); letter-spacing:-.02em; }
-    .month-name.cur{ background:linear-gradient(120deg,var(--mag),var(--pur)); -webkit-background-clip:text; background-clip:text; -webkit-text-fill-color:transparent; }
-    .month-year{ font-size:.92rem; font-weight:700; color:var(--muted); }
-    .month-now{ margin-left:auto; font-size:.66rem; font-weight:800; text-transform:uppercase; letter-spacing:.08em; color:#fff; background:linear-gradient(120deg,var(--mag),var(--pur)); padding:4px 11px; border-radius:999px; }
+    .month-card{ border:1px solid var(--line); padding:14px 18px 18px; background:var(--paper); margin-bottom:14px; }
+    .month-head{ display:flex; align-items:baseline; gap:10px; margin-bottom:12px; padding-bottom:9px; border-bottom:1px solid var(--line); }
+    .month-name{ font-size:.8rem; font-weight:600; letter-spacing:.18em; text-transform:uppercase; color:var(--ink); }
+    .month-name.cur{ border-bottom:1px solid var(--ink); padding-bottom:2px; }
+    .month-year{ font-size:.6rem; font-weight:500; letter-spacing:.12em; color:var(--mute); }
+    .month-now{
+      margin-left:auto; font-size:.5rem; font-weight:600; text-transform:uppercase; letter-spacing:.14em;
+      color:#fff; background:var(--ink); padding:3px 9px;
+    }
     .month-card .cal-head{ margin-bottom:7px; }
     .cell-blank{ visibility:hidden; }
 
-    /* totals cards — one per accent color: amber=calories, teal=protein, blue=habits */
-    .tcard{ border:1.5px solid var(--line); border-radius:20px; padding:18px; text-align:center; background:var(--card); margin-bottom:12px; }
-    .tcard .tnum{ font-size:2rem; font-weight:800; letter-spacing:-.03em; line-height:1; color:var(--ink); }
-    .tcard .tlab{ color:var(--muted); font-size:.82rem; margin-top:6px; font-weight:600; }
-    .tcard.cal{ background:var(--yel-soft); border-color:#f0dda6; }
-    .tcard.cal .tnum{ color:var(--yel-ink); }
-    .tcard.pro{ background:var(--cyn-soft); border-color:#9fdfd5; }
-    .tcard.pro .tnum{ color:var(--cyn-deep); }
-    .tcard.hab{ background:#e8efff; border-color:var(--mag-soft); }
-    .tcard.hab .tnum{ color:var(--mag-deep); }
+    /* totals cards — monochrome; the numbers do the talking */
+    .tcard{ border:1px solid var(--line); padding:16px; text-align:center; background:var(--paper); margin-bottom:10px; }
+    .tcard .tnum{ font-size:1.5rem; font-weight:600; letter-spacing:-.01em; line-height:1; color:var(--ink); }
+    .tcard .tlab{ color:var(--mute); font-size:.54rem; letter-spacing:.14em; text-transform:uppercase; margin-top:7px; font-weight:500; }
 
     /* events calendar (bottom) */
-    .chip.ev{ background:#e8efff; color:var(--mag-deep); border:1px solid var(--mag-soft);
-              display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis; }
+    .chip.ev{
+      border:1px solid var(--line); color:var(--ink); background:var(--paper); text-transform:none;
+      display:inline-block; max-width:100%; overflow:hidden; text-overflow:ellipsis;
+    }
     .day.static{ cursor:default; }
-    .day.static:hover{ transform:none; box-shadow:none; border-color:var(--line); }
-    .day.static.is-logged:hover{ border-color:var(--mag-soft); }
-    .day.static.is-today:hover{ border-color:var(--cyn); }
+    .day.static:hover{ border-color:var(--line); }
+    .day.static.is-logged:hover{ border-color:#cfcfd6; }
+    .day.static.is-today:hover{ border-color:var(--ink); }
     .ev-mini{ display:none; }
-    .ev-when{ display:inline-block; font-size:.72rem; font-weight:800; color:var(--mag-deep);
-              background:var(--mag-soft); padding:4px 10px; border-radius:999px; white-space:nowrap; }
-    .ev-time{ font-size:.74rem; color:var(--muted); font-weight:600; margin-top:4px; }
-    .ev-title{ font-weight:700; color:var(--ink); }
-    .ev-notes{ color:var(--muted); font-size:.82rem; margin-top:1px; }
+    .ev-when{
+      display:inline-block; font-size:.56rem; font-weight:600; letter-spacing:.1em; text-transform:uppercase;
+      color:var(--ink); border:1px solid var(--ink); padding:4px 9px; white-space:nowrap;
+    }
+    .ev-time{ font-size:.62rem; color:var(--mute); font-weight:500; margin-top:4px; }
+    .ev-title{ font-weight:600; font-size:.78rem; color:var(--ink); }
+    .ev-notes{ color:var(--mute); font-size:.68rem; margin-top:2px; }
 
-    /* metric tiles */
-    div[data-testid="stMetric"]{ border:1.5px solid var(--line); border-radius:16px; padding:14px 16px; background:var(--card); }
-
-    .food-h{ font-size:.72rem; opacity:.6; font-weight:700; text-transform:uppercase; letter-spacing:.07em; }
-    .foot{ color:var(--muted); font-size:.78rem; text-align:center; margin-top:30px; }
+    .food-h{ font-size:.55rem; color:var(--mute); font-weight:500; text-transform:uppercase; letter-spacing:.12em; }
+    .foot{ color:var(--mute); font-size:.55rem; letter-spacing:.14em; text-transform:uppercase; text-align:center; margin-top:32px; }
 
     @media (max-width:760px){
-      .hero-stats{ gap:18px; }
-      .hstat{ text-align:left; }
+      .mast .stats{ gap:18px; }
+      .hstat, .hstat .l{ text-align:left; }
       .day{ min-height:62px; padding:6px; gap:3px; }
       .chips, .day .dow{ display:none; }
       .dot{ width:6px; height:6px; }
-      .day .dom{ font-size:.9rem; }
-      .pill{ min-width:58px; }
+      .day .dom{ font-size:.85rem; }
+      .pill{ min-width:56px; }
       .ev-mini{ display:inline-flex; align-items:center; justify-content:center;
-                min-width:18px; height:18px; margin:auto auto 2px; padding:0 5px;
-                border-radius:999px; background:var(--mag); color:#fff;
-                font-size:.62rem; font-weight:800; }
+                min-width:16px; height:16px; margin:auto auto 2px; padding:0 5px;
+                background:var(--ink); color:#fff; font-size:.55rem; font-weight:600; }
     }
     </style>
     """,
@@ -800,21 +875,18 @@ streak = calc_streak(set(df_by_date.keys()), today)
 # =============================================================================
 st.markdown(
     f"""
-    <div class="hero">
-      <div class="hero-left">
-        <div class="hero-mark">✦</div>
-        <div>
-          <div class="hero-title">Daily Wellness</div>
-          <div class="hero-sub">Habit &amp; nutrition check-in · {today.strftime('%A, %B %d')}</div>
-        </div>
+    <div class="mast">
+      <div>
+        <div class="title">DAILY WELLNESS</div>
+        <div class="sub">Habit &amp; nutrition check-in · {today.strftime('%A, %B %d')}</div>
       </div>
-      <div class="hero-stats">
+      <div class="stats">
         <div class="hstat">
-          <div class="v">🔥 {streak}</div>
+          <div class="v">{streak:02d}</div>
           <div class="l">Day streak</div>
         </div>
         <div class="hstat">
-          <div class="v">{logged_7}<span style="opacity:.7;font-size:1rem;font-weight:700">/7</span></div>
+          <div class="v">{logged_7}<span class="dim">/7</span></div>
           <div class="l">This week</div>
         </div>
       </div>
@@ -839,7 +911,7 @@ st.markdown(
     f"""
     <div class="sec-row">
       <div class="eyebrow" style="margin:0">Pick a day</div>
-      <a class="today-pill" href="?day={today_iso}" target="_self">↩ Today</a>
+      <a class="today-pill" href="?day={today_iso}" target="_self">Today</a>
     </div>
     """,
     unsafe_allow_html=True,
@@ -945,7 +1017,7 @@ for (yr, mo), group in groupby(window_days, key=lambda d: (d.year, d.month)):
         f'<div class="cal-grid">{"".join(cells)}</div></div>'
     )
 
-with st.expander("📅 Full calendar — this month & next"):
+with st.expander("Full calendar — this month & next"):
     st.markdown(calendar_html, unsafe_allow_html=True)
 
 st.write("")
@@ -1036,10 +1108,10 @@ with entry_col:
                 prev_items = parse_items(prev_row.get("items_json", "")) if prev_row is not None else []
                 if prev_items:
                     load_items_into_state(prev_items)
-                    st.toast("Copied yesterday's food — remember to save", icon="⧉")
+                    st.toast("Copied yesterday's food — remember to save")
                     st.rerun()
                 else:
-                    st.toast("Nothing logged the day before", icon="🤷")
+                    st.toast("Nothing logged the day before")
 
         notes = st.text_area(
             "Notes",
@@ -1089,7 +1161,7 @@ if save_clicked:
         habit_values=habit_values, items=items, notes=notes,
     )
     st.session_state.cache_buster = datetime.now().isoformat()
-    st.toast("Saved" if action == "added" else "Updated", icon="✅")
+    st.toast("Saved" if action == "added" else "Updated")
     st.rerun()
 
 if delete_clicked:
@@ -1097,7 +1169,7 @@ if delete_clicked:
         st.session_state.cache_buster = datetime.now().isoformat()
         reset_day_widget_state(sel_iso)
         st.session_state.loaded_date = None
-        st.toast("Entry deleted", icon="🗑️")
+        st.toast("Entry deleted")
         st.rerun()
     else:
         st.warning("No entry found for this date.")
@@ -1109,18 +1181,13 @@ if refresh_clicked:
 
 
 # =============================================================================
-# Trends — tucked into an expander, with a selectable time window instead of
-# the old fixed 7-day / 30-day tabs. Calories in amber, protein in teal.
+# Trends — tucked into an expander, with a selectable time window. Bars are
+# flat ink; the axes and grid stay hairline gray.
 # =============================================================================
-def trend_bars(data, ycol, ylabel, colors):
-    grad = alt.Gradient(
-        gradient="linear",
-        stops=[alt.GradientStop(color=colors[0], offset=0), alt.GradientStop(color=colors[1], offset=1)],
-        x1=1, x2=1, y1=0, y2=1,
-    )
+def trend_bars(data, ycol, ylabel):
     return (
         alt.Chart(data)
-        .mark_bar(cornerRadiusTopLeft=6, cornerRadiusTopRight=6, color=grad, size=20)
+        .mark_bar(color="#111114", size=20)
         .encode(
             x=alt.X("date_dt:T", title=None, axis=alt.Axis(format="%b %d", labelAngle=-40)),
             y=alt.Y(f"{ycol}:Q", title=ylabel),
@@ -1132,9 +1199,9 @@ def trend_bars(data, ycol, ylabel, colors):
         .properties(height=270)
         .configure_view(strokeWidth=0)
         .configure_axis(
-            labelColor="#64748b", titleColor="#64748b",
-            domainColor="#e2e8f0", tickColor="#e2e8f0", gridColor="#eef2f7",
-            labelFont="Rubik", titleFont="Rubik",
+            labelColor="#93939c", titleColor="#93939c",
+            domainColor="#e6e6ea", tickColor="#e6e6ea", gridColor="#f0f0f3",
+            labelFont="IBM Plex Mono", titleFont="IBM Plex Mono",
         )
     )
 
@@ -1165,17 +1232,17 @@ def render_window(df, days):
 
     c1, c2 = st.columns(2, gap="large")
     with c1:
-        st.markdown("**Calories by day**")
-        st.altair_chart(trend_bars(win, "total_calories", "Calories", ("#f59e0b", "#d97706")),
+        st.markdown('<div class="eyebrow">Calories by day</div>', unsafe_allow_html=True)
+        st.altair_chart(trend_bars(win, "total_calories", "Calories"),
                         use_container_width=True)
     with c2:
-        st.markdown("**Protein by day**")
-        st.altair_chart(trend_bars(win, "total_protein", "Protein (g)", ("#2dd4bf", "#0f766e")),
+        st.markdown('<div class="eyebrow">Protein by day</div>', unsafe_allow_html=True)
+        st.altair_chart(trend_bars(win, "total_protein", "Protein (g)"),
                         use_container_width=True)
 
 
 st.divider()
-with st.expander("📊 Trends"):
+with st.expander("Trends"):
     trend_days = st.radio(
         "Time window",
         TREND_WINDOW_OPTIONS,
@@ -1300,15 +1367,15 @@ def render_event_list_row(events_ws, ev, key_suffix: str):
 
     if c3.button("×", key=f"del_ev_{key_suffix}_{ev['id']}", help="Delete this event"):
         if delete_event_by_id(events_ws, str(ev["id"])):
-            st.toast("Event deleted", icon="🗑️")
+            st.toast("Event deleted")
         else:
-            st.toast("Couldn't find that event — try Refresh", icon="⚠️")
+            st.toast("Couldn't find that event — try Refresh")
         st.session_state.ev_cache_buster = datetime.now().isoformat()
         st.rerun()
 
 
 st.divider()
-with st.expander("🗓️ Events calendar"):
+with st.expander("Events calendar"):
     events_ws = None
     try:
         events_ws = get_or_create_events_worksheet()
@@ -1334,7 +1401,7 @@ with st.expander("🗓️ Events calendar"):
             else:
                 add_event(events_ws, ev_date, ev_title, ev_time, ev_notes)
                 st.session_state.ev_cache_buster = datetime.now().isoformat()
-                st.toast(f"Added: {str(ev_title).strip()}", icon="🗓️")
+                st.toast(f"Added: {str(ev_title).strip()}")
                 st.rerun()
 
         # ---- prep events ----
